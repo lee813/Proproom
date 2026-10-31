@@ -1,0 +1,7 @@
+[plugin]
+name = "loudness"
+version = "0.0.1"
+sdk = ">=0.1,<2"
+types = ["analyzer"]
+status = "stub"
+summary = "ebur128 integrated loudness, LRA, true peak."

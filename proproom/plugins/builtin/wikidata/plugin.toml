@@ -1,0 +1,7 @@
+[plugin]
+name = "wikidata"
+version = "0.0.1"
+sdk = ">=0.1,<2"
+types = ["source"]
+status = "stub"
+summary = "Entity resolution only: name -> QID, multilingual labels, P569/P570, depicts reverse lookup."

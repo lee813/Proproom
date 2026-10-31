@@ -1,0 +1,7 @@
+[plugin]
+name = "embedgemma2"
+version = "0.0.1"
+sdk = ">=0.1,<2"
+types = ["embedder"]
+status = "stub"
+summary = "google/embeddinggemma-2 text/image/video/audio embeddings, MRL-truncated to 256d."

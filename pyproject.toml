@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proproom"
+version = "0.0.1"
+description = "The prop room for your agents: a NAS-native, provenance-first media library."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+# Stage 3: embedder backends. Installed per hardware tier image, not by default.
+cuda = ["sentence-transformers>=5"]
+intel = ["openvino>=2025.0", "optimum-intel"]
+
+[project.scripts]
+prop = "proproom.api.cli:main"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["proproom*"]
+
+[tool.setuptools.package-data]
+proproom = ["migrations/*.sql", "core/sql/*.sql", "default_config.toml", "api/share/*", "plugins/builtin/*/plugin.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

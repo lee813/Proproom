@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+# libraries, tokens and keys never go into the repo
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+instance.token
+keys.toml
+deploy/*/.env.local
+
+# private, kept local: full handover (incl. appendix A) and the private deployment
+proproom-HANDOVER.md
+deploy/fnos/

@@ -1,0 +1,30 @@
+# Generic single-container deployment. Copy, set the NAS path, `docker compose up -d`.
+# Network exposure: "8765:8765" listens on every host interface. Never port-forward it to the internet.
+# LAN only: set PROP_BIND to the NAS's LAN IP. Remote access: reverse proxy + HTTPS, or Tailscale.
+services:
+  proproom:
+    image: ${PROP_IMAGE:-ghcr.io/lee813/proproom:latest}
+    build: .
+    container_name: proproom
+    restart: unless-stopped
+    init: true
+    # user: "1000:1000"            # match the NAS user that owns the folder
+    ports:
+      - "${PROP_BIND:-0.0.0.0}:8765:8765"
+    volumes:
+      - ${PROP_NAS_PATH:-/path/on/nas}:/nas
+    environment:
+      PROP_PUBLIC_URL: ${PROP_PUBLIC_URL:-}   # recommended: http://<nas-lan-ip>:8765
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 4g }
+        # NVIDIA tier only — delete this block on Intel/CPU:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
+    # Intel iGPU tier: uncomment and remove the nvidia reservation above.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # Never mount /var/run/docker.sock.

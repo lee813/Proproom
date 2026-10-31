@@ -1,0 +1,7 @@
+[plugin]
+name = "credits_basic"
+version = "0.0.1"
+sdk = ">=0.1,<2"
+types = ["exporter"]
+status = "stub"
+summary = "Attribution text grouped by basis: open licence / on-screen source pages / data."

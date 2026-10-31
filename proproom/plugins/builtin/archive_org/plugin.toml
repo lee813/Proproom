@@ -1,0 +1,7 @@
+[plugin]
+name = "archive_org"
+version = "0.0.1"
+sdk = ">=0.1,<2"
+types = ["source"]
+status = "stub"
+summary = "Internet Archive (Prelinger etc.); read licenseurl per item."

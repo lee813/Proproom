@@ -1,0 +1,7 @@
+[plugin]
+name = "scenecut"
+version = "0.0.1"
+sdk = ">=0.1,<2"
+types = ["segmenter"]
+status = "stub"
+summary = "ffmpeg scene detection (0.3), segments 2-10 s, mid-frame thumbnails."

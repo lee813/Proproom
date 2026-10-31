@@ -1,0 +1,46 @@
+# Proproom library config — generated on first start. Every key is optional; delete what you don't change.
+# The library location is NOT configured here (see PROP_HOME / /nas/.proproom.toml).
+
+[server]
+port = 8765
+# The only "recommended" setting: base URL used for share links, e.g. "http://192.168.1.10:8765".
+# Env PROP_PUBLIC_URL overrides it. Empty = fall back to a validated Host header, else relative URLs.
+public_url = ""
+
+[http]
+# Appended to the default User-Agent (project URL + instance id). Sources ask for a contact.
+contact = ""
+rate_per_source = 1.0          # requests / second
+retry_backoff_s = [5, 10, 20, 40]
+
+[pause]
+load_per_core = 0.8            # pause pull/index when loadavg(1m) / cores exceeds this
+lockfiles = []                 # paths relative to /nas; pause while any exists
+
+[watch]
+roots = []                     # paths relative to /nas, e.g. ["project", "assets"]
+exclude = ["**/tmp/**", "**/canvas/**", "**/logs/**", "**/thumb/**"]
+
+[delivery]
+link_mode = "auto"             # auto = reflink, else copy. "hardlink" only when asked per call.
+clip = "manifest"              # manifest | fast | exact
+
+[rights]
+# Core defaults. Only the admin may widen these; plugins may only restrict.
+allow = ["cc0", "pd", "cc-by", "cc-by-sa"]
+deny = ["nc", "nd", "fair-use", "none", "editorial"]
+deny_publishers = ["AP", "Reuters", "Getty", "AFP"]
+quotation_in_search = false
+synthetic_excluded_anchors = ["person", "event", "data"]
+
+[search]
+max_per_parent = 2
+rrf_k = 60
+
+[embedding]
+model = "google/embeddinggemma-2"
+dim = 256
+idle_unload_s = 600
+
+[share]
+default_expires = "30d"

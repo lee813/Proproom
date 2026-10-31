@@ -1,0 +1,9 @@
+# 20–50 queries (zh + en), each with its relevant assets. Metrics: recall@10, nDCG@10.
+# Compare: EmbeddingGemma 2, Qwen3-VL-Embedding-2B, FTS only, hybrid.
+queries:
+  - {q: "托克维尔", anchor: person, relevant: []}
+  - {q: "托克维尔肖像", anchor: person, relevant: []}
+  - {q: "Alexis de Tocqueville portrait", anchor: person, relevant: []}
+  - {q: "勒庞", anchor: person, relevant: []}
+  - {q: "De la démocratie en Amérique 1835 title page", anchor: work, relevant: []}
+  - {q: "parliament chamber", kind: [footage], filters: {license: cc-by-sa+, min_height: 1080, exclude_used_in_last: 3}, relevant: []}
