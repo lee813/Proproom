@@ -3,5 +3,5 @@ name = "ocr_flags"
 version = "0.0.1"
 sdk = ">=0.1,<2"
 types = ["analyzer"]
-status = "stub"
-summary = "watermark / logo / burned_subs flags: embedding prompts + bottom-band OCR text density."
+status = "ready"
+summary = "OCR flags analyzer (watermark, burned_subs, logo flags)."

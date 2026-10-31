@@ -3,17 +3,246 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>Proproom share</title>
+<meta name="robots" content="noindex, nofollow">
+<title>Proproom Share</title>
 <style>
-  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --muted: #666; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #999; } }
-  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
-  p { color: var(--muted); }
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115;
+    --card-bg: #1a1d24;
+    --card-border: #282c37;
+    --fg: #e2e8f0;
+    --muted: #94a3b8;
+    --primary: #3b82f6;
+    --success: #10b981;
+    --danger: #ef4444;
+    --badge-bg: #2d3748;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --card-border: #e2e8f0;
+      --fg: #0f172a;
+      --muted: #64748b;
+      --badge-bg: #f1f5f9;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 20px 16px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    max-width: 900px;
+    margin: 0 auto 24px auto;
+  }
+  h1 { margin: 0 0 6px 0; font-size: 24px; font-weight: 600; }
+  .note { color: var(--muted); margin: 0 0 16px 0; font-size: 15px; }
+  .grid {
+    max-width: 900px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  @media (min-width: 640px) {
+    .grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+  .media-wrapper {
+    background: #000;
+    aspect-ratio: 16/10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+  }
+  .media-wrapper img, .media-wrapper video {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+  .card-body { padding: 16px; flex: 1; display: flex; flex-direction: column; }
+  .item-title { font-size: 16px; font-weight: 600; margin: 0 0 8px 0; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .badge {
+    background: var(--badge-bg);
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  .badge-link { color: var(--primary); }
+  .caption { color: var(--muted); font-size: 13px; margin-bottom: 16px; flex: 1; }
+  .vote-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .btn {
+    flex: 1;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--fg);
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: all 0.15s;
+  }
+  .btn:hover { filter: brightness(1.1); }
+  .btn-want.active { background: var(--success); color: #fff; border-color: var(--success); }
+  .btn-reject.active { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .comment-box {
+    display: flex;
+    gap: 8px;
+  }
+  .comment-input {
+    flex: 1;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--card-border);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 13px;
+  }
+  .btn-send {
+    padding: 8px 12px;
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .status-msg {
+    font-size: 12px;
+    color: var(--success);
+    margin-top: 6px;
+    display: none;
+  }
 </style>
 </head>
 <body>
-<h1>Proproom</h1>
-<p>Share pages are not implemented yet (handover §9, stage 4).</p>
+<header>
+  <h1 id="share-title">Review Selections</h1>
+  <p class="note" id="share-note">Please review the proposed media assets below and mark want or reject.</p>
+</header>
+<main class="grid" id="items-grid"></main>
+
+<script>
+  const token = window.location.pathname.split("/s/")[1].split("/")[0];
+  const apiUrl = `/s/${token}`;
+
+  async function loadItems() {
+    try {
+      const res = await fetch(`${apiUrl}/items`);
+      if (!res.ok) {
+        document.body.innerHTML = '<div style="text-align:center;padding:40px;"><h2>Link Expired or Invalid</h2><p>This share link may have expired or been revoked.</p></div>';
+        return;
+      }
+      const data = await res.json();
+      if (data.title) document.getElementById("share-title").textContent = data.title;
+      if (data.note) document.getElementById("share-note").textContent = data.note;
+
+      const grid = document.getElementById("items-grid");
+      grid.innerHTML = "";
+
+      data.items.forEach(item => {
+        const card = document.createElement("div");
+        card.className = "card";
+
+        let mediaHtml = "";
+        const mediaUrl = `${apiUrl}/media/${item.representation_id}`;
+        if (item.kind === "footage" || item.kind === "video") {
+          mediaHtml = `<video controls preload="metadata" loop src="${mediaUrl}"></video>`;
+        } else if (item.kind === "music" || item.kind === "audio" || item.kind === "sfx") {
+          mediaHtml = `<audio controls src="${mediaUrl}" style="width:90%;"></audio>`;
+        } else {
+          mediaHtml = `<img src="${mediaUrl}" alt="${item.title}" loading="lazy">`;
+        }
+
+        const currentVerdict = item.verdict || null;
+        const currentComment = item.comment || "";
+
+        card.innerHTML = `
+          <div class="media-wrapper">${mediaHtml}</div>
+          <div class="card-body">
+            <div class="item-title">#${item.pos} ${item.title}</div>
+            <div class="meta-row">
+              <span class="badge">${item.kind}</span>
+              ${item.license ? `<span class="badge">${item.license}</span>` : ""}
+              ${item.artist ? `<span class="badge">${item.artist}</span>` : ""}
+              ${item.source_url ? `<a href="${item.source_url}" target="_blank" class="badge badge-link">Source ↗</a>` : ""}
+            </div>
+            <div class="caption">${item.caption || item.description || ""}</div>
+            <div class="vote-row">
+              <button class="btn btn-want ${currentVerdict === 'want' ? 'active' : ''}" onclick="submitFeedback(${item.pos}, 'want')">✓ Want</button>
+              <button class="btn btn-reject ${currentVerdict === 'reject' ? 'active' : ''}" onclick="submitFeedback(${item.pos}, 'reject')">✕ Reject</button>
+            </div>
+            <div class="comment-box">
+              <input type="text" class="comment-input" id="cmt-${item.pos}" placeholder="Add a comment…" value="${currentComment}">
+              <button class="btn-send" onclick="sendComment(${item.pos})">Send</button>
+            </div>
+            <div class="status-msg" id="msg-${item.pos}">Feedback saved!</div>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function submitFeedback(pos, verdict) {
+    const cmtInput = document.getElementById(`cmt-${pos}`);
+    const comment = cmtInput ? cmtInput.value : "";
+    await sendFeedbackData(pos, verdict, comment);
+    loadItems();
+  }
+
+  async function sendComment(pos) {
+    const cmtInput = document.getElementById(`cmt-${pos}`);
+    const comment = cmtInput ? cmtInput.value : "";
+    await sendFeedbackData(pos, "want", comment);
+    const msg = document.getElementById(`msg-${pos}`);
+    if (msg) {
+      msg.style.display = "block";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+    }
+  }
+
+  async function sendFeedbackData(pos, verdict, comment) {
+    try {
+      await fetch(`${apiUrl}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pos, verdict, comment })
+      });
+    } catch (e) {
+      console.error("Failed to submit feedback", e);
+    }
+  }
+
+  loadItems();
+</script>
 </body>
 </html>

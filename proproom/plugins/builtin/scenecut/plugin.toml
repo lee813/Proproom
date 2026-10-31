@@ -3,5 +3,5 @@ name = "scenecut"
 version = "0.0.1"
 sdk = ">=0.1,<2"
 types = ["segmenter"]
-status = "stub"
-summary = "ffmpeg scene detection (0.3), segments 2-10 s, mid-frame thumbnails."
+status = "ready"
+summary = "FFmpeg scene cut detection (threshold 0.3, min 2s, max 10s)."

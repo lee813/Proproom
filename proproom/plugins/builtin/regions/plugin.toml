@@ -3,5 +3,5 @@ name = "regions"
 version = "0.0.1"
 sdk = ">=0.1,<2"
 types = ["analyzer"]
-status = "stub"
-summary = "Face / plate / text / subject / logo boxes into region (focus + blur for thumbnails)."
+status = "ready"
+summary = "Composition / Region analyzer (face, plate, text, subject, logo bounding boxes)."

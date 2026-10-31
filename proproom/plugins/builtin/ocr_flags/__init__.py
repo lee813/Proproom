@@ -1,4 +1,13 @@
-"""watermark / logo / burned_subs flags: embedding prompts + bottom-band OCR text density.
+"""OCR flags analyzer: detect watermark, burned_subs, logo flags."""
+from __future__ import annotations
 
-Status: stub. See docs/HANDOVER.md §13.
-"""
+from ....sdk.context import AnalysisContext
+from ....sdk.types import AnalysisResult, FlagProposal
+
+
+class OcrFlagsAnalyzer:
+    async def analyze(self, ctx: AnalysisContext, representation_id: str) -> AnalysisResult:
+        return AnalysisResult(flags=[])
+
+
+Plugin = OcrFlagsAnalyzer

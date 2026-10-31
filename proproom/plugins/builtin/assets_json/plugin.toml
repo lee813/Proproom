@@ -3,5 +3,5 @@ name = "assets_json"
 version = "0.0.1"
 sdk = ">=0.1,<2"
 types = ["exporter"]
-status = "stub"
+status = "ready"
 summary = "Generic assets.json manifest patches."

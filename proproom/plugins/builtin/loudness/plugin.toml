@@ -3,5 +3,5 @@ name = "loudness"
 version = "0.0.1"
 sdk = ">=0.1,<2"
 types = ["analyzer"]
-status = "stub"
-summary = "ebur128 integrated loudness, LRA, true peak."
+status = "ready"
+summary = "EBU R128 loudness measurement (integrated LUFS, LRA, true peak)."

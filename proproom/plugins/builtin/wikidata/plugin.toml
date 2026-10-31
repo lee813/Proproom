@@ -3,5 +3,8 @@ name = "wikidata"
 version = "0.0.1"
 sdk = ">=0.1,<2"
 types = ["source"]
-status = "stub"
+status = "ready"
 summary = "Entity resolution only: name -> QID, multilingual labels, P569/P570, depicts reverse lookup."
+
+[domains]
+api = ["www.wikidata.org", "wikidata.org"]

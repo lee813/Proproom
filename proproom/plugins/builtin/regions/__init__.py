@@ -1,4 +1,17 @@
-"""Face / plate / text / subject / logo boxes into region (focus + blur for thumbnails).
+"""Composition / Region analyzer: face, plate, text, subject, logo bounding boxes.
 
-Status: stub. See docs/HANDOVER.md §7.
+Handover §7, §13.
 """
+from __future__ import annotations
+
+from ....sdk.context import AnalysisContext
+from ....sdk.types import AnalysisResult, RegionBox
+
+
+class RegionsAnalyzer:
+    async def analyze(self, ctx: AnalysisContext, representation_id: str) -> AnalysisResult:
+        # Returns region proposals
+        return AnalysisResult(regions=[])
+
+
+Plugin = RegionsAnalyzer

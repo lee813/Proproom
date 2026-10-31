@@ -132,9 +132,19 @@ class SegmentProposal:
 @dataclass
 class PolicyDecision:
     decision: Decision
-    reasons: list[dict[str, Any]]
+    reasons: list[dict[str, Any]] = field(default_factory=list)
     evidence_ids: list[str] = field(default_factory=list)
     obligations: list[str] = field(default_factory=list)
+    code: str | None = None
+    detail: str | None = None
+
+    def __post_init__(self):
+        if self.code and not self.reasons:
+            self.reasons = [{"code": self.code, "detail": self.detail or ""}]
+
+
+FlagProposal = FlagResult
+RegionBox = dict[str, Any]
 
 
 @dataclass

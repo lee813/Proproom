@@ -3,5 +3,10 @@ name = "commons"
 version = "0.0.1"
 sdk = ">=0.1,<2"
 types = ["source"]
-status = "stub"
+status = "ready"
 summary = "Wikimedia Commons: images, video (vp9 derivatives <=1080p), audio; extmetadata licence evidence."
+
+[domains]
+api = ["commons.wikimedia.org"]
+thumbnail = ["upload.wikimedia.org"]
+download = ["upload.wikimedia.org"]
