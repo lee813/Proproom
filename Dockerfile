@@ -39,6 +39,7 @@ RUN if [ "$INSTALL_BROWSER" = "1" ]; then python -m playwright install --with-de
 
 COPY pyproject.toml README.md ./
 COPY proproom ./proproom
+COPY tools ./tools
 RUN pip install ".${EXTRAS:+[$EXTRAS]}"
 COPY tests ./tests
 
