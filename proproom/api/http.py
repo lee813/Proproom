@@ -17,11 +17,11 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from .. import __version__
-from ..core import bootstrap, db, hardware, store
+from ..core import bootstrap, db, hardware, share_download, store
 from ..core.ids import utcnow
 from ..core.writer import Writer
 from ..sdk.errors import ProproomError
@@ -212,66 +212,63 @@ def share_items(token: str) -> dict[str, Any]:
 @app.get("/s/{token}/media/{rep_id}")
 async def share_media(token: str, rep_id: str, request: Request) -> Response:
     share = _get_share(token)
-    b = _state["booted"]
-    conn = db.connect(b.home.db, readonly=True)
     try:
-        row = conn.execute(
-            "SELECT rep.blob_sha256, b.mime, b.bytes, b.storage_path "
-            "FROM share_item si "
-            "JOIN representation rep ON rep.id = si.representation_id "
-            "JOIN blob b ON b.sha256 = rep.blob_sha256 "
-            "WHERE si.share_id = ? AND si.representation_id = ?",
-            (share["id"], rep_id),
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, detail="Media representation not found in this share")
+        files = share_download.prepare(_state["booted"].home, share["id"], representation_id=rep_id)
+    except ProproomError as e:
+        if e.code == "share_media_missing":
+            raise HTTPException(404, detail=e.message) from e
+        raise
+    if not files:
+        raise HTTPException(404, detail="Media representation not found in this share")
+    file = files[0]
+    file_path, file_size, mime = file.path, file.size, file.mime
+    download = request.query_params.get("download") == "1"
 
-        file_path = b.home.root / row["storage_path"]
-        if not file_path.is_file():
-            raise HTTPException(404, detail="Underlying media blob missing")
+    # Support Range header for video / audio seeking and partial requests.
+    range_header = request.headers.get("Range")
+    if range_header and range_header.startswith("bytes="):
+        raw_range = range_header.replace("bytes=", "").strip()
+        if raw_range.startswith("-"):
+            suffix_len = int(raw_range[1:])
+            start = max(0, file_size - suffix_len)
+            end = file_size - 1
+        else:
+            byte_range = raw_range.split("-")
+            start = int(byte_range[0])
+            end = int(byte_range[1]) if byte_range[1] else file_size - 1
+        start = max(0, start)
+        end = min(file_size - 1, end)
+        length = max(0, (end - start) + 1)
 
-        file_size = row["bytes"]
-        mime = row["mime"] or "application/octet-stream"
+        def iter_file():
+            with file_path.open("rb") as f:
+                f.seek(start)
+                rem = length
+                while rem > 0:
+                    data = f.read(min(rem, 64 * 1024))
+                    if not data:
+                        break
+                    rem -= len(data)
+                    yield data
 
-        # Support Range header for video / audio seeking and partial requests
-        range_header = request.headers.get("Range")
-        if range_header and range_header.startswith("bytes="):
-            raw_range = range_header.replace("bytes=", "").strip()
-            if raw_range.startswith("-"):
-                suffix_len = int(raw_range[1:])
-                start = max(0, file_size - suffix_len)
-                end = file_size - 1
-            else:
-                byte_range = raw_range.split("-")
-                start = int(byte_range[0])
-                end = int(byte_range[1]) if byte_range[1] else file_size - 1
-            start = max(0, start)
-            end = min(file_size - 1, end)
-            length = max(0, (end - start) + 1)
+        headers = {"Content-Range": f"bytes {start}-{end}/{file_size}", "Accept-Ranges": "bytes",
+                   "Content-Length": str(length), "Content-Type": mime}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="{file.name}"'
+        return StreamingResponse(iter_file(), status_code=206, headers=headers)
 
-            def iter_file():
-                with open(file_path, "rb") as f:
-                    f.seek(start)
-                    rem = length
-                    while rem > 0:
-                        chunk_size = min(rem, 64 * 1024)
-                        data = f.read(chunk_size)
-                        if not data:
-                            break
-                        rem -= len(data)
-                        yield data
+    return FileResponse(file_path, media_type=mime, filename=file.name if download else None)
 
-            headers = {
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(length),
-                "Content-Type": mime,
-            }
-            return StreamingResponse(iter_file(), status_code=206, headers=headers)
 
-        return FileResponse(file_path, media_type=mime)
-    finally:
-        conn.close()
+@app.get("/s/{token}/download.zip")
+def share_archive(token: str, pos: list[int] | None = Query(default=None)) -> StreamingResponse:
+    share = _get_share(token)
+    home = _state["booted"].home
+    files = share_download.prepare(home, share["id"], positions=pos)
+    credits = share_download.credits_text(home, files)
+    return StreamingResponse(share_download.stream(files, credits), media_type="application/zip",
+                             headers={"Content-Disposition": 'attachment; filename="proproom-share.zip"',
+                                      "Cache-Control": "no-store"})
 
 
 @app.post("/s/{token}/feedback")

@@ -141,13 +141,7 @@ def prepare_delivery_plan(
         if abs_dest.exists():
             conflicts.append({"relpath": rel_dest, "exists": True})
 
-        credit_snapshot = {
-            "title": asset["title"],
-            "artist": ev["attribution"] if ev else None,
-            "license": ev["license_id"] if ev else None,
-            "source_url": prov["source_url"] if prov else None,
-            "basis": ass["basis"],
-        }
+        credit_snapshot = _snapshot(asset["title"], prov, ev, ass["basis"])
         credits_list.append(credit_snapshot)
 
         planned_files.append({
@@ -315,6 +309,75 @@ def _update_manifest(conn: sqlite3.Connection, project_dir: Path, project_id: st
     os.replace(tmp_m, manifest_file)
 
 
+def _snapshot(title: str, prov: sqlite3.Row | None, ev: sqlite3.Row | None, basis: str | None) -> dict[str, Any]:
+    """What a credit line needs, taken from an asset's latest provenance, rights evidence and assessment."""
+    return {
+        "title": title,
+        "artist": ev["attribution"] if ev else None,
+        "license": ev["license_id"] if ev else None,
+        "source_url": prov["source_url"] if prov else None,
+        "basis": basis,
+    }
+
+
+def asset_credit(conn: sqlite3.Connection, asset_id: str) -> dict[str, Any]:
+    """The credit snapshot of an asset as it stands now (a delivery stores the same one with each usage)."""
+    asset = conn.execute("SELECT title FROM asset WHERE id = ?", (asset_id,)).fetchone()
+    prov = conn.execute("SELECT * FROM provenance WHERE asset_id = ? ORDER BY retrieved DESC LIMIT 1",
+                        (asset_id,)).fetchone()
+    ev = conn.execute("SELECT * FROM rights_evidence WHERE provenance_id = ? ORDER BY created DESC LIMIT 1",
+                      (prov["id"],)).fetchone() if prov else None
+    ass = conn.execute("SELECT basis FROM rights_assessment WHERE asset_id = ? ORDER BY assessed_at DESC LIMIT 1",
+                       (asset_id,)).fetchone()
+    return _snapshot(asset["title"], prov, ev, ass["basis"] if ass else None)
+
+
+def credit_group(basis: str | None) -> str:
+    """The credits section a rights basis belongs in."""
+    if basis in ("license", "public_domain", "provider_license"):
+        return "open_license"
+    return basis if basis in ("quotation", "own_work") else "other"
+
+
+def _credit_line(it: dict[str, Any]) -> str:
+    parts = [it["title"]]
+    if it["artist"]:
+        parts.append(f"by {it['artist']}")
+    if it["source_url"]:
+        parts.append(f"({it['source_url']})")
+    if it["license"]:
+        parts.append(f"licensed under {it['license']}")
+    return "- " + " ".join(parts)
+
+
+def format_credits(groups: dict[str, list[dict[str, Any]]]) -> str:
+    """The credits text for entries already sorted into credit_group sections."""
+    text_lines = []
+    if groups["open_license"]:
+        text_lines.append("## Open Media Credits\n")
+        text_lines.extend(_credit_line(it) for it in groups["open_license"])
+        text_lines.append("")
+
+    if groups["quotation"]:
+        text_lines.append("## On-screen Sources & Quotations\n")
+        for it in groups["quotation"]:
+            text_lines.append(f"- {it['title']}: {it['source_url'] or ''}")
+        text_lines.append("")
+
+    if groups["own_work"]:
+        text_lines.append("## Original Work\n")
+        for it in groups["own_work"]:
+            text_lines.append(f"- {it['title']} ({it['as_name']})")
+        text_lines.append("")
+
+    if groups["other"]:  # no recorded basis: say what is known rather than leave the file out
+        text_lines.append("## Other (no recorded rights basis)\n")
+        text_lines.extend(_credit_line(it) for it in groups["other"])
+        text_lines.append("")
+
+    return "\n".join(text_lines).strip()
+
+
 def get_project_credits(conn: sqlite3.Connection, project_id: str) -> dict[str, Any]:
     """Attribution for a project, grouped by basis, from delivery-time snapshots."""
     rows = conn.execute(
@@ -335,10 +398,7 @@ def get_project_credits(conn: sqlite3.Connection, project_id: str) -> dict[str, 
     }
 
     for r in rows:
-        basis = r["basis"] or "other"
-        target_group = "open_license" if basis in ("license", "public_domain", "provider_license") else (
-            "quotation" if basis == "quotation" else ("own_work" if basis == "own_work" else "other")
-        )
+        target_group = credit_group(r["basis"])
         snap = json.loads(r["credit_snapshot"])
         groups[target_group].append({
             "as_name": r["as_name"],
@@ -350,37 +410,10 @@ def get_project_credits(conn: sqlite3.Connection, project_id: str) -> dict[str, 
             "modifications": json.loads(r["modifications"]) if r["modifications"] else [],
         })
 
-    # Generate formatted text
-    text_lines = []
-    if groups["open_license"]:
-        text_lines.append("## Open Media Credits\n")
-        for it in groups["open_license"]:
-            parts = [it["title"]]
-            if it["artist"]:
-                parts.append(f"by {it['artist']}")
-            if it["source_url"]:
-                parts.append(f"({it['source_url']})")
-            if it["license"]:
-                parts.append(f"licensed under {it['license']}")
-            text_lines.append("- " + " ".join(parts))
-        text_lines.append("")
-
-    if groups["quotation"]:
-        text_lines.append("## On-screen Sources & Quotations\n")
-        for it in groups["quotation"]:
-            text_lines.append(f"- {it['title']}: {it['source_url'] or ''}")
-        text_lines.append("")
-
-    if groups["own_work"]:
-        text_lines.append("## Original Work\n")
-        for it in groups["own_work"]:
-            text_lines.append(f"- {it['title']} ({it['as_name']})")
-        text_lines.append("")
-
     return {
         "project_id": project_id,
         "groups": groups,
-        "formatted": "\n".join(text_lines).strip(),
+        "formatted": format_credits(groups),
     }
 
 

@@ -110,6 +110,15 @@
     transition: all 0.15s;
   }
   .btn:hover { filter: brightness(1.1); }
+  .download-all { display: inline-flex; flex: none; text-decoration: none; padding: 10px 16px; }
+  .download-all[hidden] { display: none; }
+  .download-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .download-actions[hidden] { display: none; }
+  .download-actions .btn { display: inline-flex; flex: none; width: auto; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .item-actions { display: flex; align-items: center; gap: 12px; }
+  .item-actions label { white-space: nowrap; }
+  .item-actions a { text-decoration: none; }
   .btn-want.active { background: var(--success); color: #fff; border-color: var(--success); }
   .btn-reject.active { background: var(--danger); color: #fff; border-color: var(--danger); }
   .comment-box {
@@ -144,7 +153,12 @@
 <body>
 <header>
   <h1 id="share-title">Review Selections</h1>
-  <p class="note" id="share-note">Please review the proposed media assets below and mark want or reject.</p>
+  <p class="note" id="share-note">View the shared media below.</p>
+  <div class="download-actions" id="download-actions" hidden>
+    <a class="btn download-all" id="download-all" href="#">Download all (ZIP)</a>
+    <button class="btn" id="download-selected" type="button" disabled>Download selected (ZIP)</button>
+  </div>
+  <p class="note">Downloading does not record use in a project.</p>
 </header>
 <main class="grid" id="items-grid"></main>
 
@@ -162,6 +176,9 @@
       const data = await res.json();
       if (data.title) document.getElementById("share-title").textContent = data.title;
       if (data.note) document.getElementById("share-note").textContent = data.note;
+      const downloadAll = document.getElementById("download-all");
+      downloadAll.href = `${apiUrl}/download.zip`;
+      document.getElementById("download-actions").hidden = false;
 
       const grid = document.getElementById("items-grid");
       grid.innerHTML = "";
@@ -191,9 +208,16 @@
               ${item.source_url ? `<a href="${item.source_url}" target="_blank" class="badge badge-link">Source ↗</a>` : ""}
             </div>
             <div class="caption">${item.caption || item.description || ""}</div>
+            <div class="item-actions">
+              <label><input type="checkbox" class="item-select" value="${item.pos}"> Select #${item.pos}</label>
+              <a class="btn" href="${mediaUrl}?download=1" download>Download file #${item.pos}</a>
+            </div>
           </div>
         `;
         grid.appendChild(card);
+      });
+      grid.addEventListener("change", () => {
+        document.getElementById("download-selected").disabled = !grid.querySelector(".item-select:checked");
       });
     } catch (e) {
       console.error(e);
@@ -233,6 +257,11 @@
   }
   */
 
+  document.getElementById("download-selected").addEventListener("click", () => {
+    const params = new URLSearchParams();
+    document.querySelectorAll(".item-select:checked").forEach(input => params.append("pos", input.value));
+    if ([...params].length) window.location.href = `${apiUrl}/download.zip?${params}`;
+  });
   loadItems();
 </script>
 </body>

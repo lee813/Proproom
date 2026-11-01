@@ -66,6 +66,22 @@ prop share --selection_id S1 --title "Trains"      # or --assets '["<asset_id>",
 Returns `url` (`http://192.168.0.113:8765/s/<token>`). The page is view-only. `prop share_revoke --share <token>`
 turns a link off.
 
+For a share URL `<url>`, its token also authorizes these HTTP endpoints:
+
+- `GET <url>/items` returns the shared items as JSON, including each `representation_id`.
+- `GET <url>/media/<representation_id>` returns that shared file and supports HTTP Range requests; append
+  `?download=1` to request an attachment with a filename.
+- `GET <url>/download.zip` streams all files in the share as a ZIP, ending with a `CREDITS.txt` for the files in it. For selected items, pass repeated item positions,
+  for example `GET <url>/download.zip?pos=1&pos=3`; these positions come from `GET <url>/items`.
+- On the share page, use each card's Download file button, or select cards and choose Download selected (ZIP).
+  Download all (ZIP) includes every shared item. Selections on the page are for download only, not project usage.
+
+The attachment option and ZIP controls require a server version with share-download support; if they are absent or
+the ZIP endpoint returns 404 for an otherwise valid share, that server may not have the update deployed yet.
+
+These URLs work only while the share is valid. Treat the token-bearing URL as a secret. Downloading files does not
+record project usage or deliver them to a project: use `prop link` and then `prop credits` for that workflow.
+
 ## Remote sources
 
 ```bash
