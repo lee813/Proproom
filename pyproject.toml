@@ -7,7 +7,7 @@ name = "proproom"
 version = "0.0.1"
 description = "The prop room for your agents: a NAS-native, provenance-first media library."
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.11"
 dynamic = ["dependencies"]
 
