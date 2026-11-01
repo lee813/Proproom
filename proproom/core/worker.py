@@ -13,9 +13,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from . import db, jobs
+from . import db, embedding, hardware, jobs
 from .fetch import evaluate_source_rights, fetch
 from .ids import utcnow
+from .media import kind_family
 from .plugins import run_sync
 from ..sdk.context import HookContext
 from ..sdk.errors import ProproomError
@@ -23,11 +24,15 @@ from ..sdk.types import EnumerateRequest, RepresentationOffer, RightsEvidence, S
 
 logger = logging.getLogger("proproom.worker")
 MAX_PULL_ERRORS = 5
+# Job kinds the worker advances step by step. Other kinds (import_project, verify) run inside the operation that
+# created them; that call owns the job row while it is `running`, and the worker must not touch it.
+STEPPED_KINDS = ("pull", "index")
 
 
 def tick(ctx: Any) -> bool:
     """Run one unit of background work (event delivery or job progress). Returns True if work was done."""
     b = ctx.booted
+    hardware.require_gpu()
     pm = getattr(ctx, "plugin_manager", None) or (ctx.pm() if hasattr(ctx, "pm") else None)
     conn = db.connect(b.home.db)
     try:
@@ -90,9 +95,11 @@ def tick(ctx: Any) -> bool:
                 conn.execute("COMMIT")
 
         # 2. Check for queued or running jobs
+        # A queued job of a kind nobody steps is failed below, never left waiting forever.
         job_row = conn.execute(
-            "SELECT id, kind, params, state FROM job WHERE state IN ('queued', 'running') "
-            "ORDER BY created ASC LIMIT 1"
+            "SELECT id, kind, params, state FROM job WHERE state = 'queued' "
+            f"OR (state = 'running' AND kind IN ({', '.join('?' * len(STEPPED_KINDS))})) "
+            "ORDER BY created ASC LIMIT 1", STEPPED_KINDS
         ).fetchone()
 
         if job_row:
@@ -136,6 +143,33 @@ def tick(ctx: Any) -> bool:
         conn.close()
 
 
+def _line_cap(spec_jobs: list[dict[str, Any]], line: int, budget: int) -> int:
+    """Bytes the pull may have used by the end of `line`: the budget split by each line's `share` (equal shares when
+    none is given), cumulative so a line that finds little leaves its part to the next. The last line may use it all."""
+    if line >= len(spec_jobs) - 1:
+        return budget
+    shares = [j.get("share") for j in spec_jobs]
+    if all(s is None for s in shares):
+        shares = [1 / len(spec_jobs)] * len(spec_jobs)
+    return int(budget * min(1.0, sum(float(s or 0) for s in shares[: line + 1])))
+
+
+def _next_line(cursor: dict[str, Any]) -> None:
+    cursor.pop("refs", None)
+    cursor.pop("next_page", None)
+    cursor.update(job=cursor["job"] + 1, page=None, offset=0)
+
+
+def _finish_pull(ctx: Any, conn: sqlite3.Connection, job_id: str, progress: dict[str, Any], pm: Any) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    jobs.finish_job(conn, job_id, "succeeded")
+    conn.execute("COMMIT")
+    # What the pull took is only findable by image once it is indexed.
+    if progress.get("taken") and pm is not None and embedding.loaded(pm) is not None:
+        from .indexing import index_representations
+        index_representations(ctx, {})
+
+
 def _execute_pull_job(ctx: Any, conn: sqlite3.Connection, job_id: str, params: dict[str, Any], pm: Any) -> None:
     """Process one candidate, persisting the page and offset after every step."""
     import yaml
@@ -146,9 +180,7 @@ def _execute_pull_job(ctx: Any, conn: sqlite3.Connection, job_id: str, params: d
     if row["budget_bytes"] is None:
         raise ProproomError("bad_argument", "Pull job has no byte budget")
     if row["used_bytes"] >= row["budget_bytes"]:
-        conn.execute("BEGIN IMMEDIATE")
-        jobs.finish_job(conn, job_id, "succeeded")
-        conn.execute("COMMIT")
+        _finish_pull(ctx, conn, job_id, progress, pm)
         return
     spec_path = Path(params["spec"])
     if not spec_path.is_absolute():
@@ -158,18 +190,31 @@ def _execute_pull_job(ctx: Any, conn: sqlite3.Connection, job_id: str, params: d
     if not isinstance(spec, dict) or not isinstance(spec.get("jobs"), list):
         raise ProproomError("bad_argument", "Invalid pull specification")
     if cursor["job"] >= len(spec["jobs"]):
-        conn.execute("BEGIN IMMEDIATE")
-        jobs.finish_job(conn, job_id, "succeeded")
-        conn.execute("COMMIT")
+        _finish_pull(ctx, conn, job_id, progress, pm)
         return
     pjob = spec["jobs"][cursor["job"]]
     source = pjob["source"]
+    cap = _line_cap(spec["jobs"], cursor["job"], row["budget_bytes"])
     plugin = pm.plugins.get(source) if pm else None
+    skip_line = None
     if not plugin or not plugin.instance:
-        raise ProproomError("source_unavailable", f"Source {source} is unavailable")
-    if plugin.manifest.get("source", {}).get("bulk_allowed") is False:
+        skip_line = "source_unavailable"
+    elif plugin.manifest.get("source", {}).get("bulk_allowed") is False:
         raise ProproomError("bulk_not_allowed", f"Source {source} does not permit bulk pulls")
+    elif row["used_bytes"] >= cap:
+        skip_line = "share_used"
+    if skip_line:
+        # One line of the spec can't run or has spent its share; the rest of the spec still can.
+        if skip_line == "source_unavailable":
+            progress.setdefault("lines_skipped", []).append({"line": cursor["job"] + 1, "source": source,
+                                                             "reason": skip_line})
+        _next_line(cursor)
+        conn.execute("BEGIN IMMEDIATE")
+        jobs.update_job_progress(conn, job_id, progress, cursor=cursor)
+        conn.execute("COMMIT")
+        return
     sctx = pm.get_source_context(source)
+    want_family = kind_family(pjob.get("kind"))
     # Persist the source's page once, before processing any candidate.  A restart
     # resumes this exact snapshot even when the remote search order changes.
     if "refs" not in cursor:
@@ -178,7 +223,8 @@ def _execute_pull_job(ctx: Any, conn: sqlite3.Connection, job_id: str, params: d
                                    query=pjob.get("search") or pjob.get("query"), cursor=cursor["page"])
             page = run_sync(plugin.instance.enumerate(sctx, req))
         else:
-            req = SearchRequest(query=pjob.get("search") or pjob.get("query") or "", kind=pjob.get("kind"), cursor=cursor["page"])
+            req = SearchRequest(query=pjob.get("search") or pjob.get("query") or "",
+                                kind=[pjob["kind"]] if pjob.get("kind") else None, cursor=cursor["page"])
             page = run_sync(plugin.instance.search(sctx, req))
         if page.next_cursor and page.next_cursor == cursor["page"]:
             raise ProproomError("invalid_cursor", "Source returned the same page cursor")
@@ -219,23 +265,38 @@ def _execute_pull_job(ctx: Any, conn: sqlite3.Connection, job_id: str, params: d
             verdict, reasons, _, _, _ = evaluate_source_rights(ctx=ctx, pm=pm, policy_version=b.policy_version,
                 policy_rules=json.loads(policy["rules"]), source_name=source, external_id=ext_id, resolved=resolved)
             offer = resolved.offers[0] if resolved.offers else None
-            if verdict != "allow":
+            if want_family and kind_family(resolved.kind) != want_family:
+                decision, reason = "skipped", f"kind_{resolved.kind}"
+            elif verdict != "allow":
                 decision, reason = "rejected", reasons[0]["code"] if reasons else "policy"
             elif not offer:
                 decision, reason = "skipped", "no_offer"
-            elif offer.bytes is not None and row["used_bytes"] + offer.bytes > row["budget_bytes"]:
+            elif offer.bytes is not None and row["used_bytes"] + offer.bytes > cap:
+                # The line's share is nearly spent: stop it here rather than look up every remaining candidate.
                 decision, reason = "deferred", "budget"
+                _next_line(cursor)
             else:
-                result = fetch(ctx, {"source": source, "external_id": ext_id, "revision": ref.revision})
-                blob = conn.execute("SELECT bytes FROM blob WHERE sha256 = ?", (result["sha256"],)).fetchone()
-                if not blob:
-                    raise ProproomError("blob_missing", "Fetched blob was not recorded")
-                downloaded = blob["bytes"]
-                decision, reason = "taken", "ok"
+                # A source may not know a file's size (Commons' video transcodes don't); the download then refuses it
+                # from the server's Content-Length, or stops once it runs past what the line has left.
+                try:
+                    result = fetch(ctx, {"source": source, "external_id": ext_id, "revision": ref.revision,
+                                         "max_bytes": cap - row["used_bytes"]})
+                except ProproomError as e:
+                    if e.code != "budget_exceeded":
+                        raise
+                    decision, reason = "deferred", "budget"
+                    _next_line(cursor)
+                else:
+                    blob = conn.execute("SELECT bytes FROM blob WHERE sha256 = ?", (result["sha256"],)).fetchone()
+                    if not blob:
+                        raise ProproomError("blob_missing", "Fetched blob was not recorded")
+                    downloaded = blob["bytes"]
+                    decision, reason = "taken", "ok"
         except Exception as e:
-            logger.warning("Pull candidate %s:%s failed: %s", source, ext_id, e)
+            # Some exceptions (timeouts) have no message; the type is what says what went wrong.
+            last_error = f"{type(e).__name__}: {e}"[:1000]
+            logger.warning("Pull candidate %s:%s failed: %s", source, ext_id, last_error)
             attempts = (seen["error_attempts"] if seen and seen["decision"] == "error" else 0) + 1
-            last_error = str(e)[:1000]
             decision, reason = "error", "too_many_errors" if attempts >= MAX_PULL_ERRORS else last_error[:100]
     conn.execute("BEGIN IMMEDIATE")
     if decision:

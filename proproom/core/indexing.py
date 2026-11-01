@@ -10,25 +10,17 @@ from pathlib import Path
 import struct
 from typing import Any
 
-from . import db, hardware, jobs, spaces, store
+from . import db, embedding, jobs, spaces, store
 from .ids import utcnow
-from .plugins import run_sync
+from .plugins import LoadedPlugin, PluginManager
 from ..sdk.context import EmbedContext
 from ..sdk.errors import ProproomError
 
 log = logging.getLogger("proproom.indexing")
 
 
-def _embedder(ctx: Any) -> Any:
-    pm = ctx.plugin_manager or ctx.pm()
-    for plugin in pm.plugins.values():
-        if "embedder" in plugin.types and plugin.instance and plugin.manifest.get("plugin", {}).get("status") != "stub":
-            return plugin.instance
-    raise ProproomError("no_embedder", "No embedder plugin is loaded")
-
-
 def index_representations(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
-    embedder = _embedder(ctx)
+    embedder = embedding.find(ctx.pm()).instance
     conn = db.connect(ctx.booted.home.db)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -45,24 +37,25 @@ def index_representations(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
-def _embed_one_batch(embedder: Any, ectx: EmbedContext, inputs: list[dict]) -> tuple[list, list]:
-    batch = run_sync(embedder.embed(ectx, inputs))
+def _embed_one_batch(pm: PluginManager, plugin: LoadedPlugin, ectx: EmbedContext, inputs: list[dict]
+                     ) -> tuple[list, list]:
+    batch = embedding.embed(pm, plugin, ectx, inputs)
     if len(batch.vectors) != len(inputs) or len(batch.input_hashes) != len(inputs):
         raise ProproomError("invalid_embedding_batch", "Embedder returned the wrong number of vectors")
     return batch.vectors, batch.input_hashes
 
 
-def _embed_each(embedder: Any, ectx: EmbedContext, inputs: list[dict], candidates: list, skipped: list
-                ) -> tuple[list, list]:
+def _embed_each(pm: PluginManager, plugin: LoadedPlugin, ectx: EmbedContext, inputs: list[dict], candidates: list,
+                skipped: list) -> tuple[list, list]:
     """Embed a batch. If it fails, embed its items one by one: an item that fails is recorded in `skipped` (and
     tried again on the next index run) so one unreadable file does not stop the index. If every item fails, the
     embedder itself is broken and the error is raised. `candidates` is narrowed in place to the embedded items."""
     if not inputs:
         return [], []
     try:
-        return _embed_one_batch(embedder, ectx, inputs)
+        return _embed_one_batch(pm, plugin, ectx, inputs)
     except ProproomError as e:
-        if e.code == "invalid_embedding_batch" or len(inputs) == 1:
+        if e.code in ("invalid_embedding_batch", "gpu_lost") or len(inputs) == 1:
             raise
     except Exception:
         if len(inputs) == 1:
@@ -70,7 +63,7 @@ def _embed_each(embedder: Any, ectx: EmbedContext, inputs: list[dict], candidate
     vectors, hashes, kept, first_error = [], [], [], None
     for inp, cand in zip(inputs, candidates):
         try:
-            (vec,), (h,) = _embed_one_batch(embedder, ectx, [inp])
+            (vec,), (h,) = _embed_one_batch(pm, plugin, ectx, [inp])
         except Exception as e:  # recorded per item below; re-raised if nothing embeds
             first_error = first_error or e
             skipped.append({"representation_id": cand["rep_id"], "reason": "embed_failed",
@@ -87,7 +80,9 @@ def _embed_each(embedder: Any, ectx: EmbedContext, inputs: list[dict], candidate
 
 def step_index(ctx: Any, conn: Any, job_id: str, params: dict[str, Any]) -> None:
     b = ctx.booted
-    embedder = _embedder(ctx)
+    pm = ctx.pm()
+    plugin = embedding.find(pm)
+    embedder = plugin.instance
     job_row = conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
     cursor = json.loads(job_row["cursor"]) if job_row["cursor"] else {}
     space_id = params["space_id"]
@@ -130,15 +125,7 @@ def step_index(ctx: Any, conn: Any, job_id: str, params: dict[str, Any]) -> None
         inp["prompt"] = "document"
         inputs.append(inp)
         candidates.append(cand)
-    hw = cursor.get("hardware")
-    if hw is None:
-        hw = hardware.detect()
-    cursor["hardware"] = hw
-    gpu = hw.get("tier") == "nvidia"
-    ectx = EmbedContext(plugin="embedder", log=log, config={}, device="cuda" if gpu else "cpu",
-                        dtype=hw["devices"][0].get("dtype", "fp32") if gpu else "fp32",
-                        models_dir=str(b.home.dir("models")))
-    vectors, hashes = _embed_each(embedder, ectx, inputs, candidates, skipped)
+    vectors, hashes = _embed_each(pm, plugin, embedding.context(b.home, plugin, log), inputs, candidates, skipped)
 
     # Commit vectors in transaction
     try:

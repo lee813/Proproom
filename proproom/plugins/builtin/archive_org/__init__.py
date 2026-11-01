@@ -19,20 +19,37 @@ from ....sdk.types import (
 )
 
 
+# advancedsearch's `mediatype` for each library kind.
+_MEDIATYPE = {"footage": "movies", "music": "audio", "sfx": "audio", "ambience": "audio", "photo": "image",
+              "artwork": "image", "document": "texts"}
+
+
 class ArchiveOrgSource:
     SEARCH_URL = "https://archive.org/advancedsearch.php"
     META_URL = "https://archive.org/metadata/"
 
     async def search(self, ctx: SourceContext, req: SearchRequest) -> CandidatePage:
-        limit = min(req.limit or 10, 50)
+        return await self._query(ctx, req.query, req.kind, req.cursor, req.limit or 10)
+
+    async def enumerate(self, ctx: SourceContext, req: EnumerateRequest) -> CandidatePage:
+        # A collection is an advancedsearch filter, so listing one is a search narrowed to it.
+        parts = [f"collection:{req.collection}" if req.collection else "", f"({req.query})" if req.query else ""]
+        return await self._query(ctx, " AND ".join(x for x in parts if x), None, req.cursor, 50)
+
+    async def _query(self, ctx: SourceContext, q: str, kind: list[str] | None, cursor: str | None,
+                     limit: int) -> CandidatePage:
+        types = {_MEDIATYPE.get(k) for k in kind or []}
+        if len(types) == 1 and None not in types:
+            q = f"({q}) AND mediatype:{types.pop()}"
+        rows = min(limit, 50)
+        page = int(cursor or 1)
         params = {
-            "q": req.query,
+            "q": q,
             "fl[]": "identifier,title,description,mediatype,licenseurl",
-            "rows": str(limit),
+            "rows": str(rows),
+            "page": str(page),
             "output": "json",
         }
-        if req.cursor:
-            params["page"] = req.cursor
 
         data = await ctx.http.get_json(self.SEARCH_URL, params=params)
         docs = data.get("response", {}).get("docs", [])
@@ -51,10 +68,7 @@ class ArchiveOrgSource:
                 rights=RightsEvidence(basis="license" if lic_url else "unknown", license_url=lic_url),
             ))
 
-        return CandidatePage(items=candidates)
-
-    async def enumerate(self, ctx: SourceContext, req: EnumerateRequest) -> CandidatePage:
-        return CandidatePage(items=[])
+        return CandidatePage(items=candidates, next_cursor=str(page + 1) if len(docs) == rows else None)
 
     async def resolve(self, ctx: SourceContext, ref: SourceRef) -> ResolvedSource:
         url = f"{self.META_URL}{ref.external_id}"

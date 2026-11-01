@@ -22,9 +22,22 @@ def test_wire_and_agency_images_rejected(conn, pub):
     assert evaluate_rights(policy_rules(conn), basis="license", license_id="cc-by-4.0", publisher=pub)[0] == "deny"
 
 
-def test_unknown_rights_cannot_be_ingested_as_allowed(conn):
-    """§6: remote candidates may be 'unknown', but nothing unknown is allowed."""
-    assert evaluate_rights(policy_rules(conn), basis="unknown")[0] == "deny"
+def test_material_is_usable_unless_evidence_says_otherwise(conn):
+    """§6: missing, unrecognised or unexplained rights info is allowed and noted; only evidence blocks."""
+    rules = policy_rules(conn)
+    for kw in ({"basis": "unknown"}, {"basis": "public_domain"},
+               {"basis": "license", "license_id": "open-government-licence-v3.0"},
+               {"basis": "license", "license_id": "standard-license"},
+               {"basis": "provider_license", "license_id": "some-stock-license"},
+               {"basis": "license", "license_id": "cc-by-sa-4.0", "restrictions": ["personality"]}):
+        dec, reasons, _ = evaluate_rights(rules, **kw)
+        assert dec == "allow" and reasons, kw
+
+
+def test_disputed_files_are_denied(conn):
+    """§6: a deletion request or copyvio tag at the source is evidence against use."""
+    assert evaluate_rights(policy_rules(conn), basis="license", license_id="cc-by-4.0",
+                           restrictions=["disputed"])[0] == "deny"
 
 
 def test_obligations_attribution_and_share_alike(conn):
@@ -58,10 +71,12 @@ def test_quotation_needs_explicit_confirmation(conn):
     assert evaluate_rights(policy_rules(conn), basis="quotation")[0] == "review"
 
 
-def test_public_domain_requires_specific_reason(conn):
-    """§6: public_domain must state the concrete reason; '政府作品' or a bare 'PD' is not enough."""
-    assert evaluate_rights(policy_rules(conn), basis="public_domain")[0] != "allow"
-    assert evaluate_rights(policy_rules(conn), basis="license", license_id=normalize_license("Public domain"))[0] != "allow"
+def test_public_domain_without_a_reason_is_noted(conn):
+    """§6: public_domain should state the concrete reason; a bare 'PD' is still usable, with the gap noted."""
+    for kw in ({"basis": "public_domain"},
+               {"basis": "license", "license_id": normalize_license("Public domain")}):
+        dec, reasons, _ = evaluate_rights(policy_rules(conn), **kw)
+        assert dec == "allow" and reasons[-1]["code"] == "public_domain_unverified"
 
 
 def test_assessment_keeps_basis_for_review(conn, home):

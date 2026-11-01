@@ -30,15 +30,23 @@ def _clean_text(s: str | None) -> str:
     return _HTML_STRIP.sub("", s).strip()
 
 
+# Commons search's `filetype:` keyword for each library kind.
+_FILETYPE = {"footage": "video", "music": "audio", "sfx": "audio", "ambience": "audio", "graphic": "drawing",
+             "photo": "bitmap", "portrait": "bitmap", "artwork": "bitmap", "document": "bitmap", "screenshot": "bitmap"}
+
+
 class CommonsSource:
     API_URL = "https://commons.wikimedia.org/w/api.php"
 
     async def search(self, ctx: SourceContext, req: SearchRequest) -> CandidatePage:
         limit = min(req.limit or 12, 50)
+        types = {_FILETYPE.get(k) for k in req.kind or []}
+        # One filetype per query; for mixed kinds search everything and leave the filtering to the caller.
+        query = f"{req.query} filetype:{types.pop()}" if len(types) == 1 and None not in types else req.query
         params: dict[str, Any] = {
             "action": "query",
             "generator": "search",
-            "gsrsearch": req.query,
+            "gsrsearch": query,
             "gsrlimit": str(limit),
             "gsrnamespace": "6",  # File: namespace
             "prop": "imageinfo",
@@ -139,7 +147,7 @@ class CommonsSource:
             "action": "query",
             "titles": ref.external_id,
             "prop": "imageinfo|videoinfo",
-            "iiprop": "url|extmetadata|size|mime",
+            "iiprop": "url|extmetadata|size|mime|mediatype",
             "iiurlwidth": "2000",
             "viprop": "derivatives|url|extmetadata",
             "format": "json",
@@ -155,11 +163,13 @@ class CommonsSource:
 
         title = page.get("title", "").replace("File:", "")
         mime_type = "image/jpeg"
+        mediatype = ""
 
         if "imageinfo" in page and page["imageinfo"]:
             ii = page["imageinfo"][0]
             meta = ii.get("extmetadata", {})
             mime_type = ii.get("mime", "image/jpeg")
+            mediatype = ii.get("mediatype", "")
 
             artist = _clean_text(meta.get("Artist", {}).get("value"))
             lic_short = _clean_text(meta.get("LicenseShortName", {}).get("value"))
@@ -247,9 +257,11 @@ class CommonsSource:
                     bytes=chosen.get("size"),
                 ))
 
-        if "video" in mime_type or "webm" in mime_type or "videoinfo" in page:
+        # The API returns a `videoinfo` block for every file, photos included (with no derivatives), and gives Ogg
+        # video and Ogg audio the same `application/ogg` MIME type, so the kind comes from Commons' `mediatype`.
+        if mediatype == "VIDEO" or mime_type.startswith("video/"):
             kind = "footage"
-        elif "audio" in mime_type or "ogg" in mime_type:
+        elif mediatype == "AUDIO" or mime_type.startswith("audio/"):
             kind = "music"
         else:
             kind = "photo"

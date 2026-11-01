@@ -10,6 +10,7 @@ review. Videos are measured on their middle frame, the one the thumbnail uses.
 """
 from __future__ import annotations
 
+import gc
 import threading
 
 from ....sdk.context import AnalysisContext
@@ -78,6 +79,17 @@ class RegionsAnalyzer:
                 model = Owlv2ForObjectDetection.from_pretrained(MODEL).to(device).eval()
                 self._model = (torch, processor, model, device)
             return self._model
+
+    def release(self) -> None:
+        """Drop OWLv2 and hand the GPU memory back when idle (handover §4.2). YuNet is a file path, not a model."""
+        with self._lock:
+            if self._model is None:
+                return
+            torch = self._model[0]
+            self._model = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def detect(self, image, thresholds: dict[str, float]) -> list[dict]:
         torch, processor, model, device = self._load()

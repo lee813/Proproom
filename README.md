@@ -65,10 +65,10 @@ the policy stricter, never looser.
 </td>
 <td valign="top">
 
-### 📱 Human review in one link
-`prop share` turns a selection into a mobile-friendly page with no login. It shows zoomable images, video
-segments that loop between in and out points, and the licence and credit for each item. The reviewer taps
-**want / reject / ★** and adds a comment, and the agent reads the answers back with `share_feedback`.
+### 🔗 Share a selection
+The agent picks from the contact sheet and links; nobody has to sign off. To show someone what it picked,
+`prop share` turns a selection into a page with no login: zoomable images, video segments that loop between
+in and out points, and the licence and credit for each item. If you want different picks, tell the agent.
 
 </td>
 </tr>
@@ -161,32 +161,28 @@ prop search "oil tanker in a canal" --k 12 --sheet
 prop remote commons "Tocqueville portrait" --sheet
 prop fetch --selection_id S1 --pick '[2]'
 
-# 3. Ask a human, on their phone
-prop share --selection_id S1 --title "Episode 12: tankers"
-prop share_feedback <token>
-
-# 4. Dry-run the delivery, then deliver
+# 3. The agent picks from the sheet. Dry-run the delivery, then deliver
 prop link --project project/Episode12 --selection_id S1 --pick '[3,7]' --plan
 prop link --plan_id P1
 
-# 5. Write the credits
+# 4. Write the credits
 prop credits project/Episode12
 ```
 
-Bulk restocking runs as a background job you can pause: `prop pull pull.yaml --budget 1G`.
+Agents that load skills can use [`skills/proproom/SKILL.md`](skills/proproom/SKILL.md): copy or link the folder into
+the agent's skills directory (for example `~/.claude/skills/` or `~/.codex/skills/`).
+
+To show someone the picks: `prop share --selection_id S1` gives a link. Bulk restocking runs as a background job you can pause:
+`prop pull pull.yaml --budget 1G`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant A as 🤖 Agent
     participant P as 🎬 Proproom
-    participant H as 📱 Human
     A->>P: search "car factory aerial" --sheet
     P-->>A: selection S + 4×3 contact sheet
-    A->>P: share S
-    P-->>H: mobile review link
-    H->>P: want 3, 7 · reject 5
-    A->>P: share_feedback
+    Note over A: looks at the sheet, picks 3 and 7
     A->>P: link --pick 3,7 --plan
     P-->>A: files, conflicts, obligations
     A->>P: link --plan_id
@@ -197,7 +193,7 @@ sequenceDiagram
 ## 🤖 Plug it into your agent
 
 **MCP** (stdio). The default tool set is deliberately small: `search`, `remote`, `fetch`, `link`, `credits`,
-`share`, `share_feedback`, `job` and `capabilities`. Results come back as `structuredContent`, and contact
+`share`, `job` and `capabilities`. Results come back as `structuredContent`, and contact
 sheets as image content.
 
 ```json
@@ -239,8 +235,8 @@ flowchart LR
     B --> WK[Worker<br/>regions · scenes · loudness · OCR]
     WK --> IX[Index<br/>EmbeddingGemma 2 + FTS5]
     IX --> S[search --sheet]
-    S --> SH[share → 📱]
-    SH --> L[link --plan → link]
+    S --> L[link --plan → link]
+    S -.->|optional| SH[share link 🔗]
     L --> PR[📁 project/<br/>files + assets.json]
     PR --> CR[credits]
 ```
@@ -267,9 +263,23 @@ flowchart LR
 
 | Tier | Target | Status |
 |---|---|---|
-| **NVIDIA** | Turing (sm_75) or newer, 4 GB VRAM; fp16 on Turing, bf16 on Ampere+ | ✅ Runs. Verified on an RTX A6000 |
+| **NVIDIA** | Turing (sm_75) or newer, 4 GB VRAM; fp16 on Turing, bf16 on Ampere+ | ✅ Verified on an RTX A6000. Fits in 4 GB by measurement (below); not yet run on a real 4 GB card |
 | **Intel** | 11th-gen Core / Xe iGPU, N100 / N305, Arc, via OpenVINO | 🚧 Planned, not yet verified |
 | **CPU** | any x86-64 or arm64 | 🚧 Planned, not yet verified |
+
+**GPU memory, measured** on the A6000 with a real library's media (the largest photo, clips from 14 s to 42 min,
+then OWLv2 on top), EmbeddingGemma 2 in bf16:
+
+| | Memory |
+|---|---|
+| Model weights | 1.40 GiB |
+| Peak while embedding photos and video | 2.51 GiB |
+| Whole process, CUDA context included, with PyTorch capped at 3.2 GiB (what a 4 GB card leaves) | 3.4 GB |
+
+That leaves about 0.6 GB on a 4 GB card, so the container keeps **one copy of each model**: `prop` and the MCP
+server send their calls to the running propd instead of loading their own, and a model unused for
+`embedding.idle_unload_s` (600 s) is released. If the container loses access to the GPU, propd exits instead of
+falling back to the CPU, and Docker restarts it.
 
 `prop capabilities` reports what was detected. Throughput is published here only once it has been measured.
 
@@ -317,7 +327,6 @@ page title and the publisher.
 | [`docs/plugins.md`](docs/plugins.md) | Writing a plugin |
 | [`docs/sources.md`](docs/sources.md) | Each source's terms, with the date they were checked |
 | [`docs/errors.md`](docs/errors.md) | Error codes |
-| [`docs/HANDOVER.md`](docs/HANDOVER.md) | The full design (in Chinese) |
 
 **Requirements:** SQLite ≥ 3.37 (STRICT tables) with FTS5 trigram, and sqlite-vec ≥ 0.1.6 (0.1.9 is pinned).
 The CUDA image ships SQLite 3.45.1.

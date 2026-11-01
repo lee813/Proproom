@@ -6,13 +6,28 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import sqlite3
 import struct
 from typing import Any
 
-from . import cjk, db, dedupe, sheet, store
+from . import cjk, db, dedupe, embedding, sheet, store
 from .ids import ulid, utcnow
 from .paths import Home
+from ..sdk.errors import ProproomError
+
+log = logging.getLogger("proproom.search")
+
+
+def _starts_a_word(text: str, term: str) -> bool:
+    """`term` occurs at the start of a word or a camel-case part: "train" in "SkyTrain", not "server" in "Observer"."""
+    low, t = text.lower(), term.lower()
+    i = low.find(t)
+    while i >= 0:
+        if i == 0 or not text[i - 1].isalpha() or (text[i - 1].islower() and text[i].isupper()):
+            return True
+        i = low.find(t, i + 1)
+    return False
 
 
 def search(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
@@ -21,8 +36,9 @@ def search(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     pm = ctx.pm()
     conn = db.connect(b.home.db)
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        res = execute_search(
+        # Before the write transaction: the first query in a process loads the model, which takes seconds.
+        qvec = query_vector(conn, b.home, pm, args["query"])
+        return execute_search(
             conn=conn,
             home=b.home,
             query=args["query"],
@@ -39,16 +55,37 @@ def search(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             k=args.get("k", 12),
             cursor=args.get("cursor"),
             actor=ctx.actor,
-            plugin_manager=pm,
+            qvec=qvec,
         )
-        conn.execute("COMMIT")
-        return res
-    except BaseException:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
-        raise
     finally:
         conn.close()
+
+
+def query_vector(conn: sqlite3.Connection, home: Home, pm: Any, query: str) -> bytes | None:
+    """The query's vector in the active space, or None when there is no embedder or space yet (keyword search only).
+    A lost GPU is raised, not hidden behind keyword results."""
+    if pm is None or not conn.execute("SELECT 1 FROM embedding_space WHERE active = 1").fetchone():
+        return None
+    try:
+        plugin = embedding.find(pm)
+    except ProproomError as e:
+        if e.code == "no_embedder":
+            return None
+        raise
+    try:
+        batch = embedding.embed(pm, plugin, embedding.context(home, plugin, log), [{"text": query, "prompt": "query"}])
+    except ProproomError as e:
+        if e.code == "gpu_lost":
+            raise
+        log.warning("Embed query failed: %s", e)
+        return None
+    except Exception as e:  # noqa: BLE001 - search degrades to keyword recall; the warning names the cause
+        log.warning("Embed query failed: %s", e)
+        return None
+    if not batch.vectors:
+        return None
+    v = batch.vectors[0]
+    return struct.pack(f"{len(v)}f", *v)
 
 
 def execute_search(
@@ -83,38 +120,7 @@ def execute_search(
 
     # 1. Embed query if embedder available and space active
     if qvec is None and plugin_manager is not None:
-        embedder = None
-        for p in getattr(plugin_manager, "plugins", {}).values():
-            inst = getattr(p, "instance", p)
-            if ("embedder" in p.types and inst and
-                    p.manifest.get("plugin", {}).get("status") != "stub"):
-                embedder = inst
-                break
-        if embedder:
-            space_row = conn.execute("SELECT id, vec_table, dim FROM embedding_space WHERE active = 1").fetchone()
-            if space_row:
-                import logging
-                from ..sdk.context import EmbedContext
-                from .plugins import run_sync
-                from . import hardware
-                hw = hardware.detect()
-                gpu = hw.get("tier") == "nvidia"
-                ectx = EmbedContext(
-                    plugin=getattr(embedder, "name", "embedder"),
-                    log=logging.getLogger("proproom.search"),
-                    config={},
-                    device="cuda" if gpu else "cpu",
-                    dtype=hw["devices"][0].get("dtype", "fp32") if gpu else "fp32",
-                    models_dir=str(home.dir("models")),
-                )
-                try:
-                    batch = run_sync(embedder.embed(ectx, [{"text": query, "prompt": "query"}]))
-                    if batch.vectors:
-                        v = batch.vectors[0]
-                        qvec = struct.pack(f"{len(v)}f", *v)
-                except Exception as e:
-                    import logging
-                    logging.getLogger("proproom.search").warning("Embed query failed: %s", e)
+        qvec = query_vector(conn, home, plugin_manager, query)
 
     # 2. Resolve entity filter if provided
     matched_entity_assets: set[str] | None = None
@@ -193,6 +199,8 @@ def execute_search(
     # 4. Search channels: FTS latin, FTS CJK, CJK LIKE fallback, Vector KNN
     # We collect candidate ranks: {asset_id: {"fts": rank, "cjk": rank, "vec": rank}}
     channel_ranks: dict[str, dict[str, int]] = {}
+    best_segment: dict[str, str | None] = {}
+    vec_distance: dict[str, float] = {}  # cosine distance of the asset's closest vector, for judging relevance
 
     limit_recall = max(50, (offset + k) * 3)
 
@@ -213,20 +221,28 @@ def execute_search(
         except sqlite3.OperationalError:
             pass
 
-    # Fallback LIKE for latin terms if FTS missed
+    # Fallback for what the FTS tokenizer misses, such as "train" in "SkyTrain". Like FTS, every term must match,
+    # each at the start of a word or a camel-case part (not "server" inside "Observer"), and these hits rank after
+    # the FTS hits.
     if mode != "vector" and latin_terms:
-        for term in latin_terms:
-            sql = (
-                "SELECT a.id AS asset_id FROM search_doc s "
-                "JOIN asset a ON a.rid = s.rid "
-                "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
-                f"WHERE (s.title LIKE ? OR s.description LIKE ? OR s.artist LIKE ? OR s.tags LIKE ?) AND {common_where} LIMIT ?"
-            )
-            cur = conn.execute(sql, [f"%{term}%", f"%{term}%", f"%{term}%", f"%{term}%"] + filter_params + [limit_recall])
-            for i, r in enumerate(cur, start=1):
-                aid = r["asset_id"]
-                if "fts" not in channel_ranks.setdefault(aid, {}):
-                    channel_ranks[aid]["fts"] = i
+        fts_hits = sum(1 for ranks in channel_ranks.values() if "fts" in ranks)
+        clause = " AND ".join("(s.title || ' ' || s.description || ' ' || s.artist || ' ' || s.tags) LIKE ?"
+                              for _ in latin_terms)
+        sql = (
+            "SELECT a.id AS asset_id, s.title || ' ' || s.description || ' ' || s.artist || ' ' || s.tags AS text "
+            "FROM search_doc s "
+            "JOIN asset a ON a.rid = s.rid "
+            "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
+            f"WHERE {clause} AND {common_where} LIMIT ?"
+        )
+        cur = conn.execute(sql, [f"%{t}%" for t in latin_terms] + filter_params + [limit_recall])
+        n = fts_hits
+        for r in cur:
+            aid = r["asset_id"]
+            if "fts" in channel_ranks.get(aid, {}) or not all(_starts_a_word(r["text"], t) for t in latin_terms):
+                continue
+            n += 1
+            channel_ranks.setdefault(aid, {})["fts"] = n
 
     # Channel B: fts_cjk (trigram)
     if mode != "vector" and cjk_q.match:
@@ -287,8 +303,9 @@ def execute_search(
         vec_where_sql = " AND ".join(vec_where_clauses)
         try:
             sql = (
-                "SELECT t.asset_id, min(v.r) AS r FROM ("
-                f"  SELECT rid, row_number() OVER (ORDER BY distance) AS r FROM {active_vec_table} "
+                # SQLite returns the bare segment_id from the row holding min(v.r): the best-matching segment.
+                "SELECT t.asset_id, t.segment_id, min(v.r) AS r, min(v.distance) AS d FROM ("
+                f"  SELECT rid, distance, row_number() OVER (ORDER BY distance) AS r FROM {active_vec_table} "
                 f"  WHERE {vec_where_sql}"
                 ") v JOIN vec_target t ON t.rid = v.rid "
                 "JOIN asset a ON a.id = t.asset_id "
@@ -299,6 +316,8 @@ def execute_search(
             for r in cur:
                 aid = r["asset_id"]
                 channel_ranks.setdefault(aid, {})["vec"] = r["r"]
+                best_segment[aid] = r["segment_id"]
+                vec_distance[aid] = r["d"]
         except sqlite3.OperationalError:
             pass
 
@@ -392,28 +411,30 @@ def execute_search(
         ).fetchall()
 
         if segments:
-            for seg in segments[:2]:
-                surviving_items.append({
-                    "asset_id": aid,
-                    "representation_id": chosen_rep["id"],
-                    "segment_id": seg["id"],
-                    "slug": asset_row["slug"],
-                    "title": asset_row["title"],
-                    "kind": asset_row["kind"],
-                    "width": chosen_rep["width"],
-                    "height": chosen_rep["height"],
-                    "duration": (seg["t1"] - seg["t0"]) if (seg["t1"] is not None and seg["t0"] is not None) else chosen_rep["duration"],
-                    "blob_sha256": chosen_rep["blob_sha256"],
-                    "basis": basis,
-                    "decision": decision,
-                    "obligations": json.loads(asset_row["obligations"] or "[]"),
-                    "license_id": ev["license_id"] if ev else None,
-                    "attribution": ev["attribution"] if ev else None,
-                    "score": score,
-                    "ranks": ranks,
-                    "flags": flags,
-                    "used_in": used_projs,
-                })
+            # One item per asset: the segment the query matched best, else the first.
+            seg = next((x for x in segments if x["id"] == best_segment.get(aid)), segments[0])
+            surviving_items.append({
+                "asset_id": aid,
+                "representation_id": chosen_rep["id"],
+                "segment_id": seg["id"],
+                "slug": asset_row["slug"],
+                "title": asset_row["title"],
+                "kind": asset_row["kind"],
+                "width": chosen_rep["width"],
+                "height": chosen_rep["height"],
+                "duration": (seg["t1"] - seg["t0"]) if (seg["t1"] is not None and seg["t0"] is not None) else chosen_rep["duration"],
+                "blob_sha256": chosen_rep["blob_sha256"],
+                "basis": basis,
+                "decision": decision,
+                "obligations": json.loads(asset_row["obligations"] or "[]"),
+                "license_id": ev["license_id"] if ev else None,
+                "attribution": ev["attribution"] if ev else None,
+                "score": score,
+                "ranks": ranks,
+                "vec_distance": vec_distance.get(aid),
+                "flags": flags,
+                "used_in": used_projs,
+            })
         else:
             surviving_items.append({
                 "asset_id": aid,
@@ -433,6 +454,7 @@ def execute_search(
                 "attribution": ev["attribution"] if ev else None,
                 "score": score,
                 "ranks": ranks,
+                "vec_distance": vec_distance.get(aid),
                 "flags": flags,
                 "used_in": used_projs,
             })
@@ -473,26 +495,35 @@ def execute_search(
         tmp_sheet = home.dir("tmp") / f"sheet_{sel_id}.jpg"
         sheet.render_contact_sheet(cells, tmp_sheet)
         sheet_sha, sheet_size, sheet_relpath = store.put_file(home, tmp_sheet, mime="image/jpeg", move=True)
-        dedupe.register_blob(conn, sheet_sha, sheet_size, "image/jpeg", stored=True, storage_path=sheet_relpath)
         sheet_sha256 = sheet_sha
 
-    conn.execute(
-        "INSERT INTO selection(id, created, created_by, query, sheet_sha256) VALUES (?, ?, ?, ?, ?)",
-        (sel_id, now, actor, query_json, sheet_sha256),
-    )
-
-    for idx, item in enumerate(paged_items, start=1):
-        expl_json = json.dumps({
-            "score_type": "rrf",
-            "score": item["score"],
-            "ranks": item["ranks"],
-        })
+    # 9. Persist the selection. Rendering above (thumbnails, video frames) ran without the write lock; this
+    # transaction only holds it for the inserts.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if sheet_sha256:
+            dedupe.register_blob(conn, sheet_sha256, sheet_size, "image/jpeg", stored=True, storage_path=sheet_relpath)
         conn.execute(
-            "INSERT INTO selection_item(selection_id, idx, asset_id, representation_id, segment_id, explain) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (sel_id, idx, item["asset_id"], item["representation_id"], item["segment_id"], expl_json),
+            "INSERT INTO selection(id, created, created_by, query, sheet_sha256) VALUES (?, ?, ?, ?, ?)",
+            (sel_id, now, actor, query_json, sheet_sha256),
         )
-        item["idx"] = idx
+        for idx, item in enumerate(paged_items, start=1):
+            expl_json = json.dumps({
+                "score_type": "rrf",
+                "score": item["score"],
+                "ranks": item["ranks"],
+                "vec_distance": item["vec_distance"],
+            })
+            conn.execute(
+                "INSERT INTO selection_item(selection_id, idx, asset_id, representation_id, segment_id, explain) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (sel_id, idx, item["asset_id"], item["representation_id"], item["segment_id"], expl_json),
+            )
+            item["idx"] = idx
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
     return {
         "selection_id": sel_id,

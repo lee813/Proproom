@@ -14,6 +14,8 @@ import logging
 import re
 import sqlite3
 import sys
+import threading
+import time
 import tomllib
 from dataclasses import dataclass
 from importlib import resources
@@ -30,6 +32,7 @@ from ..sdk.context import (
 )
 from ..sdk import SDK_VERSION
 from ..sdk.errors import ProproomError
+from ..sdk.protocols import HoldsModel
 from . import db
 from .http import RateLimitedClient, build_user_agent
 from .ids import utcnow
@@ -86,6 +89,28 @@ class PluginManager:
         self.instance_id = instance_id
         self.plugins: dict[str, LoadedPlugin] = {}
         self.rejected: dict[str, str] = {}  # name -> why it was not loaded (e.g. an incompatible sdk range)
+        self._last_used: dict[str, float] = {}  # plugin name -> monotonic time core last called it
+        self._used_lock = threading.Lock()
+
+    def mark_used(self, name: str) -> None:
+        """Core calls this before it runs a plugin, so release_idle() knows which models are still in use."""
+        with self._used_lock:
+            self._last_used[name] = time.monotonic()
+
+    def release_idle(self, idle_s: float) -> list[str]:
+        """Release the models of plugins unused for idle_s seconds (handover §4.2). Returns the plugins released."""
+        now = time.monotonic()
+        with self._used_lock:
+            idle = [n for n, t in self._last_used.items() if now - t >= idle_s]
+            for n in idle:
+                del self._last_used[n]
+        released = []
+        for n in idle:
+            inst = self.plugins[n].instance if n in self.plugins else None
+            if isinstance(inst, HoldsModel):
+                inst.release()
+                released.append(n)
+        return released
 
     def load_all(self, conn: sqlite3.Connection | None = None) -> None:
         """Scan and load builtin and directory plugins."""

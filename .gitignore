@@ -15,4 +15,5 @@ deploy/*/.env.local
 
 # private, kept local: full handover (incl. appendix A) and the private deployment
 proproom-HANDOVER.md
+docs/HANDOVER.md
 deploy/fnos/

@@ -1,6 +1,6 @@
 [plugin]
 name = "embedgemma2"
-version = "0.0.1"
+version = "0.0.2"
 sdk = ">=1.0,<2"
 types = ["embedder"]
 status = "ready"

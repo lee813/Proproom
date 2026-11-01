@@ -7,16 +7,21 @@ the standard error object on stderr with exit code 2.
     prop capabilities              same as the `capabilities` operation
     prop db status | migrate
     prop <operation> [args...] [--key value …]
+
+Operations go to the running propd when there is one for this library (see api/client.py), so the CLI never loads
+a second copy of the models; with no propd running they run in this process. PROP_LOCAL=1 forces the latter.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Any
 
 from ..core import bootstrap
 from ..sdk.errors import ProproomError
+from . import client
 from .registry import REGISTRY, OpContext
 
 
@@ -59,6 +64,9 @@ def _parse_args(cmd: str, rest: list[str]) -> dict[str, Any]:
         args.setdefault("job_id", positionals[1])
     elif cmd == "add" and positionals and "paths" not in args:
         args["paths"] = positionals
+    if cmd == "add" and isinstance(args.get("paths"), list):
+        # Relative to where `prop` runs, not to propd's working directory.
+        args["paths"] = [os.path.abspath(p) for p in args["paths"]]
     elif cmd == "pull" and positionals and "spec" not in args:
         args["spec"] = positionals[0]
     elif cmd in ("plugin_new", "plugin_test") and positionals and "name" not in args:
@@ -85,6 +93,10 @@ def main(argv: list[str] | None = None) -> None:
             from .mcp import run_mcp_server  # noqa: PLC0415
             include_admin = "--admin" in ns.rest
             run_mcp_server(include_admin=include_admin)
+            return
+
+        if cmd in REGISTRY and cmd != "db_status" and (server := client.find("cli")) is not None:
+            _emit(server.call(cmd, _parse_args(cmd, ns.rest)))
             return
 
         booted = bootstrap.boot()

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, Literal
 
@@ -52,7 +53,7 @@ def put_bytes(home: Home, data: bytes, mime: str = "application/octet-stream") -
     target = blob_abspath(home, sha)
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = home.dir("tmp") / f"put_{sha}_{os.getpid()}"
+        tmp = home.dir("tmp") / f"put_{sha}_{os.getpid()}_{threading.get_ident()}"
         tmp.write_bytes(data)
         os.chmod(tmp, 0o444)  # immutable
         os.replace(tmp, target)
@@ -65,7 +66,7 @@ def put_file(home: Home, src_path: Path, mime: str = "application/octet-stream",
     target = blob_abspath(home, sha)
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = home.dir("tmp") / f"put_{sha}_{os.getpid()}"
+        tmp = home.dir("tmp") / f"put_{sha}_{os.getpid()}_{threading.get_ident()}"
         if move:
             shutil.move(src_path, tmp)
         else:
@@ -201,7 +202,7 @@ def verify(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     conn = db.connect(b.home.db)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        job_id = jobs.create_job(conn, "verify", {})
+        job_id = jobs.create_job(conn, "verify", {}, state="running")  # runs here; the worker leaves it alone
         conn.execute("COMMIT")
 
         rows = conn.execute("SELECT sha256 FROM blob WHERE stored = 1").fetchall()

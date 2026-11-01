@@ -12,6 +12,7 @@ from typing import Any
 
 from .. import __version__
 from ..core import bootstrap
+from . import client
 from .registry import REGISTRY, OpContext
 
 
@@ -38,8 +39,15 @@ def _send_response(resp: dict[str, Any]) -> None:
 
 
 def run_mcp_server(include_admin: bool = False) -> None:
-    booted = bootstrap.boot()
-    ctx = OpContext(booted, actor="mcp")
+    local: list[OpContext] = []  # booted only if a call finds no propd to forward to
+
+    def call(op: Any, args: dict[str, Any]) -> dict[str, Any]:
+        """Each call goes to propd when it is running (one copy of the models, see api/client.py)."""
+        if (server := client.find("mcp")) is not None:
+            return server.call(op.name, args)
+        if not local:
+            local.append(OpContext(bootstrap.boot(), actor="mcp"))
+        return op(local[0], args)
 
     while True:
         try:
@@ -92,7 +100,7 @@ def run_mcp_server(include_admin: bool = False) -> None:
                 })
                 continue
             try:
-                result = op(ctx, tool_args)
+                result = call(op, tool_args)
                 text_content = json.dumps(result, ensure_ascii=False, indent=2)
                 _send_response({
                     "jsonrpc": "2.0",
