@@ -235,7 +235,7 @@ def register_rights(
         "INSERT INTO rights_assessment(id, asset_id, policy_version, decision, basis, reasons, evidence_ids, "
         "obligations, assessed_at, assessed_by) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (ass_id, asset_id, policy_version, decision, basis,
+        (ass_id, asset_id, policy_version, decision, None if basis == "unknown" else basis,  # NULL: no basis to rest on
          json.dumps(reasons), json.dumps([ev_id]), json.dumps(obligations), utcnow_monotonic(), created_by),
     )
     # Vector rows carry the asset's decision for filtering; a new assessment must reach them too.

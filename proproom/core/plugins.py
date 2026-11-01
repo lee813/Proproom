@@ -34,7 +34,7 @@ from ..sdk import SDK_VERSION
 from ..sdk.errors import ProproomError
 from ..sdk.protocols import HoldsModel
 from . import db
-from .http import RateLimitedClient, build_user_agent
+from .http import ANY_PUBLIC_HOST, RateLimitedClient, build_user_agent
 from .ids import utcnow
 from .paths import Home
 
@@ -259,7 +259,8 @@ class PluginManager:
             configured = source_config.get("allowed_domains", [])
             if not isinstance(configured, list) or any(not isinstance(d, str) or not d for d in configured):
                 raise ProproomError("bad_config", f"Invalid domain list for {plugin_name}")
-            allowed_domains.extend(configured)
+            # Nothing configured: the plugin may reach any public site, never a private address.
+            allowed_domains.extend(configured or [ANY_PUBLIC_HOST])
         http = RateLimitedClient(ua, rate_per_sec=rate, allowed_domains=allowed_domains, rate_key=plugin_name)
 
         return SourceContext(

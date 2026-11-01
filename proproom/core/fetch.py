@@ -140,8 +140,24 @@ def remote(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fetch_picks(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Fetch each picked candidate on its own, so one that fails does not stop the others."""
+    results = []
+    for idx in args["pick"]:
+        one = {**args, "pick": [idx]}
+        if args.get("idempotency_key"):
+            one["idempotency_key"] = f"{args['idempotency_key']}:{idx}"
+        try:
+            results.append({"pick": idx, "status": "ok", "result": fetch(ctx, one)})
+        except ProproomError as e:
+            results.append({"pick": idx, "status": "error", "error": e.to_dict()})
+    return {"results": results, "fetched": sum(r["status"] == "ok" for r in results)}
+
+
 def fetch(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
-    """Resolve -> rights check -> download -> ingest one remote candidate."""
+    """Resolve -> rights check -> download -> ingest one remote candidate; several picks give one result each."""
+    if args.get("selection_id") and isinstance(args.get("pick"), list) and len(args["pick"]) > 1:
+        return _fetch_picks(ctx, args)
     b = ctx.booted
     source_name = args.get("source")
     external_id = args.get("external_id")

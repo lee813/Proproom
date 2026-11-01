@@ -1,9 +1,9 @@
 """Project importer pipeline (handover §13).
 
-Imports a project's media into CAS, provenance, rights and usage records. Entries listed in assets.json bring their
-source and license and back-fill usage; media files under `assets/` and `images/` that assets.json doesn't list (or
-all of them, when there is no assets.json) come in as the user's own files, without usage rows, so a later `link`
-doesn't write them into the user's assets.json.
+Imports a project's media into CAS, provenance, rights and usage records. Entries listed in assets.json (or, when a
+project has none, in the older `assets/manifest.json`) bring their source and author and back-fill usage; media files
+under `assets/` and `images/` that no list covers come in as the user's own files, without usage rows, so a later
+`link` doesn't write them into the user's assets.json.
 """
 from __future__ import annotations
 
@@ -33,7 +33,32 @@ def _source(item: dict[str, Any], as_name: str) -> tuple[str, str]:
     return "import", str(src_val)
 
 
-def _basis(lic_str: str) -> tuple[str, str | None]:
+def _manifest_items(proj_dir: Path) -> list[dict[str, Any]]:
+    """Entries of an older `assets/manifest.json` ({filename, url, source, author, usage}) in assets.json's shape."""
+    path = proj_dir / "assets" / "manifest.json"
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        return []
+    items = []
+    for entry in data:
+        if isinstance(entry, dict) and entry.get("filename"):
+            items.append({"id": Path(entry["filename"]).stem, "file": f"assets/{entry['filename']}",
+                          "source": entry.get("source") or entry.get("url") or "", "artist": entry.get("author") or ""})
+    return items
+
+
+def _credit(item: dict[str, Any]) -> str | None:
+    """Who made it, as the list says. `Unknown` is how `link` once wrote 'not recorded', so it counts as no answer."""
+    for key in ("artist", "author", "credit"):
+        value = str(item.get(key) or "").strip()
+        if value and value.lower() != "unknown" and not value.lower().startswith("unknown /"):
+            return value
+    return None
+
+
+def _basis(lic_str: str, *, sourced: bool = False) -> tuple[str, str | None]:
     lic_lower = lic_str.lower()
     if "public domain" in lic_lower or "public_domain" in lic_lower or lic_lower in ("pd", "cc0", "cc0-1.0", "cc-zero"):
         return "public_domain", "cc0" if "cc0" in lic_lower else None
@@ -41,8 +66,9 @@ def _basis(lic_str: str) -> tuple[str, str | None]:
         return "quotation", None
     if lic_str and not ("own work" in lic_lower or "own_work" in lic_lower):
         return "license", None
-    # A file in the user's project with no license recorded is theirs to use, as with `prop add`.
-    return "own_work", None
+    # Taken from somewhere else but no license recorded: usable, with the basis left open. Only a file with no known
+    # source is the user's own, as with `prop add`.
+    return ("unknown", None) if sourced else ("own_work", None)
 
 
 def _ingest(conn: Any, b: Any, *, proj_id: str, proj_dir: Path, proj_relpath: str, op_id: str, as_name: str,
@@ -86,7 +112,7 @@ def _ingest(conn: Any, b: Any, *, proj_id: str, proj_dir: Path, proj_relpath: st
 
         if listed:
             src_name, ext_id = _source(item, as_name)
-            src_url = ext_id
+            src_url = ext_id if ext_id.startswith(("http://", "https://")) else None
         else:
             src_name, ext_id, src_url = "import", f"{proj_relpath}/{rel_file}", None
 
@@ -106,8 +132,8 @@ def _ingest(conn: Any, b: Any, *, proj_id: str, proj_dir: Path, proj_relpath: st
                                              source_url=src_url)
 
         lic_str = item.get("license") or item.get("license_url") or ""
-        basis, pd_reason = _basis(lic_str)
-        attribution = item.get("artist") or item.get("author") or item.get("credit") or "Unknown"
+        basis, pd_reason = _basis(lic_str, sourced=listed and bool(item.get("source") or item.get("download")))
+        attribution = _credit(item)
         policy_row = conn.execute("SELECT rules FROM policy WHERE version = ?", (b.policy_version,)).fetchone()
         _, ass_id = dedupe.register_rights(
             conn, provenance_id=prov_id, asset_id=aid, policy_version=b.policy_version,
@@ -116,7 +142,7 @@ def _ingest(conn: Any, b: Any, *, proj_id: str, proj_dir: Path, proj_relpath: st
             attribution=attribution, created_by="import_project"
         )
 
-        dedupe.sync_search_doc(conn, rid=rid, title=title, description=item.get("desc", ""), artist=attribution)
+        dedupe.sync_search_doc(conn, rid=rid, title=title, description=item.get("desc", ""), artist=attribution or "")
 
         if listed:
             conn.execute(
@@ -166,6 +192,8 @@ def import_project(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                     assets_list = manifest_data
                 elif isinstance(manifest_data, dict):
                     assets_list = manifest_data.get("assets", [])
+            else:
+                assets_list = _manifest_items(proj_dir)
 
             listed_files: set[str] = set()
             for item in assets_list:
