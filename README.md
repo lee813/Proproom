@@ -6,6 +6,7 @@
 
 **Your agent finds the footage, sees it, picks it, clears the rights, drops it into the project and writes the credits.**
 <br>A self-hosted media library for open-licensed images, video and audio. **One container. One folder.**
+<br>Search by meaning with **EmbeddingGemma 2**, which fits on a **4 GB VRAM** GPU.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
