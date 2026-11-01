@@ -89,3 +89,13 @@ def test_search_lists_a_clip_once_however_many_segments_it_has(ctx, conn, home):
     items = REGISTRY["search"](ctx, {"query": "skyline"})["items"]
     clip = [i for i in items if i["asset_id"] == f.asset_id]
     assert len(clip) == 1 and clip[0]["segment_id"] and clip[0]["duration"] == 8
+
+
+def test_text_search_needs_every_word_at_a_word_start(ctx, conn, home):
+    """"server room" doesn't match a credit to "RoyalObserver"; "train" still finds "SkyTrain" (§7)."""
+    ingest(conn, home, slug="mla", title="Lorne Doerkson", attribution="RoyalObserver")
+    sky = ingest(conn, home, slug="sky", title="Vancouver SkyTrain")
+    rack = ingest(conn, home, slug="rack", title="Server racks in a room")
+    found = lambda q: {i["asset_id"] for i in REGISTRY["search"](ctx, {"query": q})["items"]}
+    assert found("server room") == {rack.asset_id}
+    assert sky.asset_id in found("train")

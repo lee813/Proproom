@@ -19,6 +19,17 @@ from ..sdk.errors import ProproomError
 log = logging.getLogger("proproom.search")
 
 
+def _starts_a_word(text: str, term: str) -> bool:
+    """`term` occurs at the start of a word or a camel-case part: "train" in "SkyTrain", not "server" in "Observer"."""
+    low, t = text.lower(), term.lower()
+    i = low.find(t)
+    while i >= 0:
+        if i == 0 or not text[i - 1].isalpha() or (text[i - 1].islower() and text[i].isupper()):
+            return True
+        i = low.find(t, i + 1)
+    return False
+
+
 def search(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     """Execute hybrid search pipeline."""
     b = ctx.booted
@@ -189,6 +200,7 @@ def execute_search(
     # We collect candidate ranks: {asset_id: {"fts": rank, "cjk": rank, "vec": rank}}
     channel_ranks: dict[str, dict[str, int]] = {}
     best_segment: dict[str, str | None] = {}
+    vec_distance: dict[str, float] = {}  # cosine distance of the asset's closest vector, for judging relevance
 
     limit_recall = max(50, (offset + k) * 3)
 
@@ -209,20 +221,28 @@ def execute_search(
         except sqlite3.OperationalError:
             pass
 
-    # Fallback LIKE for latin terms if FTS missed
+    # Fallback for what the FTS tokenizer misses, such as "train" in "SkyTrain". Like FTS, every term must match,
+    # each at the start of a word or a camel-case part (not "server" inside "Observer"), and these hits rank after
+    # the FTS hits.
     if mode != "vector" and latin_terms:
-        for term in latin_terms:
-            sql = (
-                "SELECT a.id AS asset_id FROM search_doc s "
-                "JOIN asset a ON a.rid = s.rid "
-                "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
-                f"WHERE (s.title LIKE ? OR s.description LIKE ? OR s.artist LIKE ? OR s.tags LIKE ?) AND {common_where} LIMIT ?"
-            )
-            cur = conn.execute(sql, [f"%{term}%", f"%{term}%", f"%{term}%", f"%{term}%"] + filter_params + [limit_recall])
-            for i, r in enumerate(cur, start=1):
-                aid = r["asset_id"]
-                if "fts" not in channel_ranks.setdefault(aid, {}):
-                    channel_ranks[aid]["fts"] = i
+        fts_hits = sum(1 for ranks in channel_ranks.values() if "fts" in ranks)
+        clause = " AND ".join("(s.title || ' ' || s.description || ' ' || s.artist || ' ' || s.tags) LIKE ?"
+                              for _ in latin_terms)
+        sql = (
+            "SELECT a.id AS asset_id, s.title || ' ' || s.description || ' ' || s.artist || ' ' || s.tags AS text "
+            "FROM search_doc s "
+            "JOIN asset a ON a.rid = s.rid "
+            "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
+            f"WHERE {clause} AND {common_where} LIMIT ?"
+        )
+        cur = conn.execute(sql, [f"%{t}%" for t in latin_terms] + filter_params + [limit_recall])
+        n = fts_hits
+        for r in cur:
+            aid = r["asset_id"]
+            if "fts" in channel_ranks.get(aid, {}) or not all(_starts_a_word(r["text"], t) for t in latin_terms):
+                continue
+            n += 1
+            channel_ranks.setdefault(aid, {})["fts"] = n
 
     # Channel B: fts_cjk (trigram)
     if mode != "vector" and cjk_q.match:
@@ -284,8 +304,8 @@ def execute_search(
         try:
             sql = (
                 # SQLite returns the bare segment_id from the row holding min(v.r): the best-matching segment.
-                "SELECT t.asset_id, t.segment_id, min(v.r) AS r FROM ("
-                f"  SELECT rid, row_number() OVER (ORDER BY distance) AS r FROM {active_vec_table} "
+                "SELECT t.asset_id, t.segment_id, min(v.r) AS r, min(v.distance) AS d FROM ("
+                f"  SELECT rid, distance, row_number() OVER (ORDER BY distance) AS r FROM {active_vec_table} "
                 f"  WHERE {vec_where_sql}"
                 ") v JOIN vec_target t ON t.rid = v.rid "
                 "JOIN asset a ON a.id = t.asset_id "
@@ -297,6 +317,7 @@ def execute_search(
                 aid = r["asset_id"]
                 channel_ranks.setdefault(aid, {})["vec"] = r["r"]
                 best_segment[aid] = r["segment_id"]
+                vec_distance[aid] = r["d"]
         except sqlite3.OperationalError:
             pass
 
@@ -410,6 +431,7 @@ def execute_search(
                 "attribution": ev["attribution"] if ev else None,
                 "score": score,
                 "ranks": ranks,
+                "vec_distance": vec_distance.get(aid),
                 "flags": flags,
                 "used_in": used_projs,
             })
@@ -432,6 +454,7 @@ def execute_search(
                 "attribution": ev["attribution"] if ev else None,
                 "score": score,
                 "ranks": ranks,
+                "vec_distance": vec_distance.get(aid),
                 "flags": flags,
                 "used_in": used_projs,
             })
@@ -489,6 +512,7 @@ def execute_search(
                 "score_type": "rrf",
                 "score": item["score"],
                 "ranks": item["ranks"],
+                "vec_distance": item["vec_distance"],
             })
             conn.execute(
                 "INSERT INTO selection_item(selection_id, idx, asset_id, representation_id, segment_id, explain) "
