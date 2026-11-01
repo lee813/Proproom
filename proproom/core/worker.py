@@ -13,7 +13,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from . import db, jobs
+from . import db, hardware, jobs
 from .fetch import evaluate_source_rights, fetch
 from .ids import utcnow
 from .plugins import run_sync
@@ -23,11 +23,15 @@ from ..sdk.types import EnumerateRequest, RepresentationOffer, RightsEvidence, S
 
 logger = logging.getLogger("proproom.worker")
 MAX_PULL_ERRORS = 5
+# Job kinds the worker advances step by step. Other kinds (import_project, verify) run inside the operation that
+# created them; that call owns the job row while it is `running`, and the worker must not touch it.
+STEPPED_KINDS = ("pull", "index")
 
 
 def tick(ctx: Any) -> bool:
     """Run one unit of background work (event delivery or job progress). Returns True if work was done."""
     b = ctx.booted
+    hardware.require_gpu()
     pm = getattr(ctx, "plugin_manager", None) or (ctx.pm() if hasattr(ctx, "pm") else None)
     conn = db.connect(b.home.db)
     try:
@@ -90,9 +94,11 @@ def tick(ctx: Any) -> bool:
                 conn.execute("COMMIT")
 
         # 2. Check for queued or running jobs
+        # A queued job of a kind nobody steps is failed below, never left waiting forever.
         job_row = conn.execute(
-            "SELECT id, kind, params, state FROM job WHERE state IN ('queued', 'running') "
-            "ORDER BY created ASC LIMIT 1"
+            "SELECT id, kind, params, state FROM job WHERE state = 'queued' "
+            f"OR (state = 'running' AND kind IN ({', '.join('?' * len(STEPPED_KINDS))})) "
+            "ORDER BY created ASC LIMIT 1", STEPPED_KINDS
         ).fetchone()
 
         if job_row:

@@ -81,7 +81,7 @@ def test_boot_does_not_recover_active_delivery(home, conn):
         lock.close()
 
 
-def test_index_caches_hardware_and_bounds_skipped_samples(ctx, conn, home, monkeypatch):
+def test_index_keeps_no_hardware_in_the_job_and_bounds_skipped_samples(ctx, conn, home, monkeypatch):
     from proproom.core import hardware, jobs, worker
     from proproom.core.plugins import LoadedPlugin, PluginManager
     class Embedder:
@@ -97,11 +97,6 @@ def test_index_caches_hardware_and_bounds_skipped_samples(ctx, conn, home, monke
     pm.plugins["embed"] = LoadedPlugin("embed", "1", "0" * 64, ["embedder"], "dir", {}, Embedder())
     ctx.plugin_manager = pm
     monkeypatch.setattr(jobs, "should_pause", lambda *args: (False, None))
-    detections = []
-    def detect():
-        detections.append(True)
-        return {"tier": "cpu", "devices": []}
-    monkeypatch.setattr(hardware, "detect", detect)
     jid = REGISTRY["index"](ctx, {})["id"]
     for _ in range(4):
         assert worker.tick(ctx)
@@ -109,7 +104,9 @@ def test_index_caches_hardware_and_bounds_skipped_samples(ctx, conn, home, monke
     progress = json.loads(row["progress"])
     assert row["state"] == "succeeded"
     assert progress["skipped_count"] == 35 and len(progress["skipped"]) == 20
-    assert len(detections) == 1
+    # Detected once per process, not stored in the job: a job resumed after a restart must not keep the tier
+    # (say, CPU after a lost GPU) it started with.
+    assert "hardware" not in json.loads(conn.execute("SELECT cursor FROM job WHERE id = ?", (jid,)).fetchone()[0] or "{}")
 
 
 def test_pull_persists_order_and_page_cursors(ctx, nas, fake_download, monkeypatch):

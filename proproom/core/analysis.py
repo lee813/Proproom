@@ -69,6 +69,7 @@ def step(ctx: Any, conn: sqlite3.Connection, pm: Any) -> bool:
         sql, params = _pending(p, role, due_only=True)
         rep = conn.execute(f"SELECT r.id, r.duration, b.mime {sql} ORDER BY r.created, r.id LIMIT 1", params).fetchone()
         if rep is not None:
+            pm.mark_used(p.name)
             _run(ctx, conn, p, role, rep)
             return True
     return False

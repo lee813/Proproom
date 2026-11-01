@@ -267,9 +267,23 @@ flowchart LR
 
 | Tier | Target | Status |
 |---|---|---|
-| **NVIDIA** | Turing (sm_75) or newer, 4 GB VRAM; fp16 on Turing, bf16 on Ampere+ | ✅ Runs. Verified on an RTX A6000 |
+| **NVIDIA** | Turing (sm_75) or newer, 4 GB VRAM; fp16 on Turing, bf16 on Ampere+ | ✅ Verified on an RTX A6000. Fits in 4 GB by measurement (below); not yet run on a real 4 GB card |
 | **Intel** | 11th-gen Core / Xe iGPU, N100 / N305, Arc, via OpenVINO | 🚧 Planned, not yet verified |
 | **CPU** | any x86-64 or arm64 | 🚧 Planned, not yet verified |
+
+**GPU memory, measured** on the A6000 with a real library's media (the largest photo, clips from 14 s to 42 min,
+then OWLv2 on top), EmbeddingGemma 2 in bf16:
+
+| | Memory |
+|---|---|
+| Model weights | 1.40 GiB |
+| Peak while embedding photos and video | 2.51 GiB |
+| Whole process, CUDA context included, with PyTorch capped at 3.2 GiB (what a 4 GB card leaves) | 3.4 GB |
+
+That leaves about 0.6 GB on a 4 GB card, so the container keeps **one copy of each model**: `prop` and the MCP
+server send their calls to the running propd instead of loading their own, and a model unused for
+`embedding.idle_unload_s` (600 s) is released. If the container loses access to the GPU, propd exits instead of
+falling back to the CPU, and Docker restarts it.
 
 `prop capabilities` reports what was detected. Throughput is published here only once it has been measured.
 

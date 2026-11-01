@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import sqlite3
 import struct
 from typing import Any
 
-from . import cjk, db, dedupe, sheet, store
+from . import cjk, db, dedupe, embedding, sheet, store
 from .ids import ulid, utcnow
 from .paths import Home
+from ..sdk.errors import ProproomError
+
+log = logging.getLogger("proproom.search")
 
 
 def search(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
@@ -21,8 +25,9 @@ def search(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     pm = ctx.pm()
     conn = db.connect(b.home.db)
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        res = execute_search(
+        # Before the write transaction: the first query in a process loads the model, which takes seconds.
+        qvec = query_vector(conn, b.home, pm, args["query"])
+        return execute_search(
             conn=conn,
             home=b.home,
             query=args["query"],
@@ -39,16 +44,37 @@ def search(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             k=args.get("k", 12),
             cursor=args.get("cursor"),
             actor=ctx.actor,
-            plugin_manager=pm,
+            qvec=qvec,
         )
-        conn.execute("COMMIT")
-        return res
-    except BaseException:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
-        raise
     finally:
         conn.close()
+
+
+def query_vector(conn: sqlite3.Connection, home: Home, pm: Any, query: str) -> bytes | None:
+    """The query's vector in the active space, or None when there is no embedder or space yet (keyword search only).
+    A lost GPU is raised, not hidden behind keyword results."""
+    if pm is None or not conn.execute("SELECT 1 FROM embedding_space WHERE active = 1").fetchone():
+        return None
+    try:
+        plugin = embedding.find(pm)
+    except ProproomError as e:
+        if e.code == "no_embedder":
+            return None
+        raise
+    try:
+        batch = embedding.embed(pm, plugin, embedding.context(home, plugin, log), [{"text": query, "prompt": "query"}])
+    except ProproomError as e:
+        if e.code == "gpu_lost":
+            raise
+        log.warning("Embed query failed: %s", e)
+        return None
+    except Exception as e:  # noqa: BLE001 - search degrades to keyword recall; the warning names the cause
+        log.warning("Embed query failed: %s", e)
+        return None
+    if not batch.vectors:
+        return None
+    v = batch.vectors[0]
+    return struct.pack(f"{len(v)}f", *v)
 
 
 def execute_search(
@@ -83,38 +109,7 @@ def execute_search(
 
     # 1. Embed query if embedder available and space active
     if qvec is None and plugin_manager is not None:
-        embedder = None
-        for p in getattr(plugin_manager, "plugins", {}).values():
-            inst = getattr(p, "instance", p)
-            if ("embedder" in p.types and inst and
-                    p.manifest.get("plugin", {}).get("status") != "stub"):
-                embedder = inst
-                break
-        if embedder:
-            space_row = conn.execute("SELECT id, vec_table, dim FROM embedding_space WHERE active = 1").fetchone()
-            if space_row:
-                import logging
-                from ..sdk.context import EmbedContext
-                from .plugins import run_sync
-                from . import hardware
-                hw = hardware.detect()
-                gpu = hw.get("tier") == "nvidia"
-                ectx = EmbedContext(
-                    plugin=getattr(embedder, "name", "embedder"),
-                    log=logging.getLogger("proproom.search"),
-                    config={},
-                    device="cuda" if gpu else "cpu",
-                    dtype=hw["devices"][0].get("dtype", "fp32") if gpu else "fp32",
-                    models_dir=str(home.dir("models")),
-                )
-                try:
-                    batch = run_sync(embedder.embed(ectx, [{"text": query, "prompt": "query"}]))
-                    if batch.vectors:
-                        v = batch.vectors[0]
-                        qvec = struct.pack(f"{len(v)}f", *v)
-                except Exception as e:
-                    import logging
-                    logging.getLogger("proproom.search").warning("Embed query failed: %s", e)
+        qvec = query_vector(conn, home, plugin_manager, query)
 
     # 2. Resolve entity filter if provided
     matched_entity_assets: set[str] | None = None
@@ -473,26 +468,34 @@ def execute_search(
         tmp_sheet = home.dir("tmp") / f"sheet_{sel_id}.jpg"
         sheet.render_contact_sheet(cells, tmp_sheet)
         sheet_sha, sheet_size, sheet_relpath = store.put_file(home, tmp_sheet, mime="image/jpeg", move=True)
-        dedupe.register_blob(conn, sheet_sha, sheet_size, "image/jpeg", stored=True, storage_path=sheet_relpath)
         sheet_sha256 = sheet_sha
 
-    conn.execute(
-        "INSERT INTO selection(id, created, created_by, query, sheet_sha256) VALUES (?, ?, ?, ?, ?)",
-        (sel_id, now, actor, query_json, sheet_sha256),
-    )
-
-    for idx, item in enumerate(paged_items, start=1):
-        expl_json = json.dumps({
-            "score_type": "rrf",
-            "score": item["score"],
-            "ranks": item["ranks"],
-        })
+    # 9. Persist the selection. Rendering above (thumbnails, video frames) ran without the write lock; this
+    # transaction only holds it for the inserts.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if sheet_sha256:
+            dedupe.register_blob(conn, sheet_sha256, sheet_size, "image/jpeg", stored=True, storage_path=sheet_relpath)
         conn.execute(
-            "INSERT INTO selection_item(selection_id, idx, asset_id, representation_id, segment_id, explain) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (sel_id, idx, item["asset_id"], item["representation_id"], item["segment_id"], expl_json),
+            "INSERT INTO selection(id, created, created_by, query, sheet_sha256) VALUES (?, ?, ?, ?, ?)",
+            (sel_id, now, actor, query_json, sheet_sha256),
         )
-        item["idx"] = idx
+        for idx, item in enumerate(paged_items, start=1):
+            expl_json = json.dumps({
+                "score_type": "rrf",
+                "score": item["score"],
+                "ranks": item["ranks"],
+            })
+            conn.execute(
+                "INSERT INTO selection_item(selection_id, idx, asset_id, representation_id, segment_id, explain) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (sel_id, idx, item["asset_id"], item["representation_id"], item["segment_id"], expl_json),
+            )
+            item["idx"] = idx
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
     return {
         "selection_id": sel_id,

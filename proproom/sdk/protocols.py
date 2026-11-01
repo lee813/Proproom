@@ -54,5 +54,12 @@ class Hook(Protocol):
     async def handle(self, ctx: HookContext, event_id: int, kind: str, payload: dict[str, Any]) -> None: ...
 
 
-__all__ = ["Source", "Embedder", "Analyzer", "Segmenter", "Policy", "Ranker", "Exporter", "Hook", "Sink",
+@runtime_checkable
+class HoldsModel(Protocol):
+    """Optional, for any plugin type that keeps model weights loaded between calls (handover §4.2). Core calls
+    release() once the plugin has gone unused for `embedding.idle_unload_s`; the next call loads the model again."""
+    def release(self) -> None: ...
+
+
+__all__ = ["Source", "Embedder", "Analyzer", "Segmenter", "Policy", "Ranker", "Exporter", "Hook", "HoldsModel", "Sink",
            "TransferRequest"]

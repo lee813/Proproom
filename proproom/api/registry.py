@@ -126,6 +126,8 @@ def _capabilities(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
 
     public_url = b.config["server"]["public_url"] or None
     warnings = [] if public_url else ["public_url_unknown"]
+    if hardware.gpu_lost():
+        warnings.append("gpu_lost")
     return {
         "version": __version__,
         "sdk": SDK_VERSION,
