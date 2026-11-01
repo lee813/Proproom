@@ -310,7 +310,8 @@ falling back to the CPU, and Docker restarts it.
 ## 🌐 Page capture
 
 Capture saves a source page as a screenshot plus an MHTML snapshot, for example a press release you quote on
-screen. It only visits hosts on an allowlist in the library's `config.toml`:
+screen. By default it visits any public website (private and local addresses are always refused). To restrict it,
+list the hosts in the library's `config.toml`:
 
 ```toml
 [capture]
@@ -327,7 +328,7 @@ prop fetch --source capture --external-id https://www.example.org/press-release 
 The options `scroll_y`, `clip` and `highlight` take CSS pixels. Capture keeps the requested and final URLs, the
 page title and the publisher.
 - Pages without a recognised open licence are recorded as quotations, for review.
-- Every navigation host and resource host must be on the allowlist, redirect targets included.
+- With an allowlist set, every navigation host and resource host must be on it, redirect targets included.
 - Frames and WebSockets are disabled.
 - Capture runs in an isolated browser context and never signs in.
 

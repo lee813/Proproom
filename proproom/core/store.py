@@ -140,7 +140,16 @@ def add(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     """Ingest local files (own work / manual)."""
     b = ctx.booted
     paths = args["paths"]
-    basis = args.get("basis", "own_work")
+    title_arg, source, tags = args.get("title"), args.get("source"), args.get("tags") or []
+    if title_arg is not None and (not isinstance(title_arg, str) or not title_arg.strip() or len(paths) != 1):
+        raise ProproomError("bad_argument", "title is a non-empty string and needs exactly one path")
+    if not isinstance(tags, list) or any(not isinstance(t, str) or not t.strip() for t in tags):
+        raise ProproomError("bad_argument", "tags is a list of non-empty strings")
+    if source is not None and (not isinstance(source, str) or not source.strip()):
+        raise ProproomError("bad_argument", "source is a non-empty string (a URL or a name)")
+    # A file with a stated source is not the user's own work, unless they say so.
+    basis = args.get("basis") or ("unknown" if source else "own_work")
+    tags = [t.strip() for t in tags]
 
     conn = db.connect(b.home.db)
     try:
@@ -168,12 +177,20 @@ def add(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             dedupe.register_blob(conn, stored_sha, stored_bytes, mime, stored=True, storage_path=relpath)
 
             rel = p.relative_to(b.home.nas) if p.is_relative_to(b.home.nas) else p
-            slug = dedupe.generate_unique_slug(conn, "manual", rel.as_posix())
-            title = p.stem.replace("_", " ")
+            if title_arg:
+                title = title_arg.strip()
+                slug = dedupe.generate_unique_slug(conn, "", title)
+            else:
+                title = p.stem.replace("_", " ")
+                slug = dedupe.generate_unique_slug(conn, "manual", rel.as_posix())
 
             aid, rid = dedupe.register_asset(conn, slug=slug, kind=kind, title=title)
             rep_id = dedupe.register_representation(conn, asset_id=aid, blob_sha256=stored_sha, role="original")
-            prov_id = dedupe.register_provenance(conn, asset_id=aid, source="manual", external_id=str(p))
+            is_url = bool(source) and source.strip().lower().startswith(("http://", "https://"))
+            prov_id = dedupe.register_provenance(
+                conn, asset_id=aid, source="manual", external_id=str(p),
+                source_url=source.strip() if is_url else None,
+                publisher=source.strip() if source and not is_url else None)
             dedupe.register_rights(
                 conn,
                 provenance_id=prov_id,
@@ -181,10 +198,12 @@ def add(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                 policy_version=b.policy_version,
                 policy_rules=policy_rules,
                 basis=basis,
-                attribution="Local User",
+                attribution="Local User" if basis == "own_work" else None,
                 created_by=ctx.actor,
             )
-            dedupe.sync_search_doc(conn, rid=rid, title=title)
+            for tag in tags:
+                conn.execute("INSERT OR IGNORE INTO tag(asset_id, tag, origin) VALUES (?, ?, 'human')", (aid, tag))
+            dedupe.sync_search_doc(conn, rid=rid, title=title, tags=tags)
 
             added.append({"asset_id": aid, "slug": slug, "sha256": stored_sha, "representation_id": rep_id})
 

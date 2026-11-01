@@ -6,6 +6,8 @@ Handover §11.4, §12.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 import time
 import threading
 from typing import Any
@@ -26,8 +28,24 @@ def build_user_agent(instance_id: str = "", contact: str = "") -> str:
     return base
 
 
+ANY_PUBLIC_HOST = "*"
+
+
+def _require_public(host: str) -> None:
+    """Refuse a host that is, or resolves to, a private, loopback or link-local address (the NAS and LAN stay out of reach)."""
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            addresses = {ipaddress.ip_address(info[4][0].split("%")[0]) for info in socket.getaddrinfo(host, None)}
+        except OSError as e:
+            raise ProproomError("domain_disallowed", f"Host '{host}' could not be resolved: {e}", retryable=True) from e
+    if not addresses or any(not a.is_global for a in addresses):
+        raise ProproomError("domain_disallowed", f"Host '{host}' is a private or local address", retryable=False)
+
+
 def check_domain(url: str, allowed_domains: list[str] | None) -> None:
-    """Validate that the URL's host matches the plugin's declared domains."""
+    """Validate that the URL's host matches the plugin's declared domains (`*`: any public host)."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
         raise ProproomError("invalid_url", "Only credential-free HTTP(S) URLs are allowed")
@@ -38,6 +56,9 @@ def check_domain(url: str, allowed_domains: list[str] | None) -> None:
             retryable=False,
         )
     host = (urlparse(url).hostname or "").lower()
+    if ANY_PUBLIC_HOST in allowed_domains:
+        _require_public(host)
+        return
     for d in allowed_domains:
         d = d.lower()
         if host == d or host.endswith("." + d):

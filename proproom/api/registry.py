@@ -280,7 +280,7 @@ _OPS = [
               input=obj(selection_id=S, pick=IL, source=S, external_id=S, revision=S, options={"type": "object"}, max_bytes=I), side_effects=True, mcp="default", handler=_fetch),
     Operation("fetch_many", "Batch fetch; per-item success/failure.", input=obj(items={"type": "array"}),
               side_effects=True, handler=_fetch_many),
-    Operation("add", "Ingest local files (own work / manual).", input=obj(["paths"], paths=SL, basis=S),
+    Operation("add", "Ingest local files (own work / manual).", input=obj(["paths"], paths=SL, basis=S, title=S, source=S, tags=SL),
               side_effects=True, handler=_add),
     Operation("link", "Deliver picks to a project; --plan previews, then execute by plan id.",
               input=obj(selection_id=S, pick=IL, assets=SL, project=S, plan=B, plan_id=S, link_mode=S, cut=S),

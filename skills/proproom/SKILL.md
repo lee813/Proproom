@@ -111,7 +111,7 @@ record project usage or deliver them to a project: use `prop link` and then `pro
 
 ```bash
 prop remote commons "freight train" --kind '["footage"]' --sheet   # candidates only, nothing stored
-prop fetch --selection_id S2 --pick '[2]'                          # rights check, download, add to library
+prop fetch --selection_id S2 --pick '[2,5]'                        # rights check, download, add to library; one result per pick
 prop index                                                         # make fetched items searchable by picture
 ```
 
@@ -122,11 +122,14 @@ photo or audio.
 
 ```bash
 prop add --paths '["/nas/assets/broll/clip.mp4"]'   # local files; usable by default
+prop add --paths '["/nas/in/IMG_42.jpg"]' --title "Lisbon tram at night" --source https://example.org/story --tags '["tram","night"]'
+                                                     # --title needs one path; a --source makes the basis "unknown" unless --basis is given
 prop import_project --project project/Episode12     # assets.json entries + files under assets/ and images/
 prop index
 ```
 
-`import_project` works with or without `assets.json`, and its result lists anything blocked under `blocked_items`.
+`import_project` works with or without `assets.json` (an older project's `assets/manifest.json` is read when there is
+none). An entry with a source but no license comes in with an unknown basis, not as the user's own work. Its result lists anything blocked under `blocked_items`.
 Tell the user about those.
 
 ## Restocking in bulk

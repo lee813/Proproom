@@ -46,7 +46,8 @@ idle_unload_s = 600
 default_expires = "30d"
 
 [capture]
-# Allow only websites you intend to capture, including any required resource hosts.
+# Empty: capture any public website (private and local addresses stay blocked). To restrict captures, list the
+# websites you intend to capture, including any required resource hosts.
 allowed_domains = []
 # Optional CDP service; an empty value uses a separately installed local Chromium.
 cdp_url = ""

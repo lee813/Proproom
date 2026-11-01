@@ -491,11 +491,13 @@ def link(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         elif assets:
             for aid in assets:
                 rep = conn.execute(
-                    "SELECT id FROM representation WHERE asset_id = ? ORDER BY role='original' DESC LIMIT 1",
+                    "SELECT r.id, a.slug FROM representation r JOIN asset a ON a.id = r.asset_id "
+                    "WHERE r.asset_id = ? ORDER BY r.role='original' DESC LIMIT 1",
                     (aid,),
                 ).fetchone()
                 if rep:
-                    items_to_deliver.append({"asset_id": aid, "representation_id": rep["id"], "segment_id": None})
+                    items_to_deliver.append({"asset_id": aid, "representation_id": rep["id"], "segment_id": None,
+                                             "slug": rep["slug"]})
 
         if not items_to_deliver:
             raise ProproomError("no_items", "No matching items to deliver")
