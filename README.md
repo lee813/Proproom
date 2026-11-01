@@ -327,7 +327,6 @@ page title and the publisher.
 | [`docs/plugins.md`](docs/plugins.md) | Writing a plugin |
 | [`docs/sources.md`](docs/sources.md) | Each source's terms, with the date they were checked |
 | [`docs/errors.md`](docs/errors.md) | Error codes |
-| [`docs/HANDOVER.md`](docs/HANDOVER.md) | The full design (in Chinese) |
 
 **Requirements:** SQLite ≥ 3.37 (STRICT tables) with FTS5 trigram, and sqlite-vec ≥ 0.1.6 (0.1.9 is pinned).
 The CUDA image ships SQLite 3.45.1.

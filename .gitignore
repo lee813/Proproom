@@ -15,4 +15,10 @@ deploy/*/.env.local
 
 # private, kept local: full handover (incl. appendix A) and the private deployment
 proproom-HANDOVER.md
+docs/HANDOVER.md
+# planning and agent instruction files never leave this machine
+docs/PLAN.md
+AGENTS.md
+GEMINI.md
+CLAUDE.md
 deploy/fnos/
