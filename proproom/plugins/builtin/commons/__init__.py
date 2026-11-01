@@ -247,7 +247,9 @@ class CommonsSource:
                     bytes=chosen.get("size"),
                 ))
 
-        if "video" in mime_type or "webm" in mime_type or "videoinfo" in page:
+        # The API returns a `videoinfo` block for every file, photos included (with no derivatives), so the kind
+        # comes from the file's MIME type.
+        if mime_type.startswith("video/") or "webm" in mime_type:
             kind = "footage"
         elif "audio" in mime_type or "ogg" in mime_type:
             kind = "music"

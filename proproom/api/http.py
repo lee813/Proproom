@@ -170,8 +170,11 @@ def share_items(token: str) -> dict[str, Any]:
             "FROM share_item si "
             "JOIN asset a ON a.id = si.asset_id "
             "JOIN representation rep ON rep.id = si.representation_id "
-            "LEFT JOIN provenance p ON p.asset_id = a.id "
-            "LEFT JOIN rights_evidence re ON re.provenance_id = p.id "
+            # One row per item: the asset's latest provenance and its latest evidence, as `link --plan` credits it.
+            "LEFT JOIN provenance p ON p.id = (SELECT id FROM provenance WHERE asset_id = a.id "
+            "ORDER BY retrieved DESC LIMIT 1) "
+            "LEFT JOIN rights_evidence re ON re.id = (SELECT id FROM rights_evidence WHERE provenance_id = p.id "
+            "ORDER BY created DESC LIMIT 1) "
             "WHERE si.share_id = ? "
             "ORDER BY si.pos",
             (share["id"],),

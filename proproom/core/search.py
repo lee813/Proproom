@@ -188,6 +188,7 @@ def execute_search(
     # 4. Search channels: FTS latin, FTS CJK, CJK LIKE fallback, Vector KNN
     # We collect candidate ranks: {asset_id: {"fts": rank, "cjk": rank, "vec": rank}}
     channel_ranks: dict[str, dict[str, int]] = {}
+    best_segment: dict[str, str | None] = {}
 
     limit_recall = max(50, (offset + k) * 3)
 
@@ -282,7 +283,8 @@ def execute_search(
         vec_where_sql = " AND ".join(vec_where_clauses)
         try:
             sql = (
-                "SELECT t.asset_id, min(v.r) AS r FROM ("
+                # SQLite returns the bare segment_id from the row holding min(v.r): the best-matching segment.
+                "SELECT t.asset_id, t.segment_id, min(v.r) AS r FROM ("
                 f"  SELECT rid, row_number() OVER (ORDER BY distance) AS r FROM {active_vec_table} "
                 f"  WHERE {vec_where_sql}"
                 ") v JOIN vec_target t ON t.rid = v.rid "
@@ -294,6 +296,7 @@ def execute_search(
             for r in cur:
                 aid = r["asset_id"]
                 channel_ranks.setdefault(aid, {})["vec"] = r["r"]
+                best_segment[aid] = r["segment_id"]
         except sqlite3.OperationalError:
             pass
 
@@ -387,28 +390,29 @@ def execute_search(
         ).fetchall()
 
         if segments:
-            for seg in segments[:2]:
-                surviving_items.append({
-                    "asset_id": aid,
-                    "representation_id": chosen_rep["id"],
-                    "segment_id": seg["id"],
-                    "slug": asset_row["slug"],
-                    "title": asset_row["title"],
-                    "kind": asset_row["kind"],
-                    "width": chosen_rep["width"],
-                    "height": chosen_rep["height"],
-                    "duration": (seg["t1"] - seg["t0"]) if (seg["t1"] is not None and seg["t0"] is not None) else chosen_rep["duration"],
-                    "blob_sha256": chosen_rep["blob_sha256"],
-                    "basis": basis,
-                    "decision": decision,
-                    "obligations": json.loads(asset_row["obligations"] or "[]"),
-                    "license_id": ev["license_id"] if ev else None,
-                    "attribution": ev["attribution"] if ev else None,
-                    "score": score,
-                    "ranks": ranks,
-                    "flags": flags,
-                    "used_in": used_projs,
-                })
+            # One item per asset: the segment the query matched best, else the first.
+            seg = next((x for x in segments if x["id"] == best_segment.get(aid)), segments[0])
+            surviving_items.append({
+                "asset_id": aid,
+                "representation_id": chosen_rep["id"],
+                "segment_id": seg["id"],
+                "slug": asset_row["slug"],
+                "title": asset_row["title"],
+                "kind": asset_row["kind"],
+                "width": chosen_rep["width"],
+                "height": chosen_rep["height"],
+                "duration": (seg["t1"] - seg["t0"]) if (seg["t1"] is not None and seg["t0"] is not None) else chosen_rep["duration"],
+                "blob_sha256": chosen_rep["blob_sha256"],
+                "basis": basis,
+                "decision": decision,
+                "obligations": json.loads(asset_row["obligations"] or "[]"),
+                "license_id": ev["license_id"] if ev else None,
+                "attribution": ev["attribution"] if ev else None,
+                "score": score,
+                "ranks": ranks,
+                "flags": flags,
+                "used_in": used_projs,
+            })
         else:
             surviving_items.append({
                 "asset_id": aid,

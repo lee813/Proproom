@@ -249,8 +249,10 @@ def _update_manifest(conn: sqlite3.Connection, project_dir: Path, project_id: st
         "FROM usage u "
         "JOIN asset a ON a.id = u.asset_id "
         "JOIN representation rep ON rep.id = u.representation_id "
-        "LEFT JOIN provenance p ON p.asset_id = a.id "
-        "LEFT JOIN rights_evidence re ON re.provenance_id = p.id "
+        "LEFT JOIN provenance p ON p.id = (SELECT id FROM provenance WHERE asset_id = a.id "
+        "ORDER BY retrieved DESC LIMIT 1) "
+        "LEFT JOIN rights_evidence re ON re.id = (SELECT id FROM rights_evidence WHERE provenance_id = p.id "
+        "ORDER BY created DESC LIMIT 1) "
         "WHERE u.project_id = ? AND u.removed_at IS NULL "
         "ORDER BY u.created",
         (project_id,),
