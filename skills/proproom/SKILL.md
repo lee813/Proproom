@@ -38,7 +38,7 @@ another library. `PROP_DOCKER_CONTAINER` selects a different container name. SSH
 The `prop credential` command must be present in the running image; if an older image does not have it, upgrade the
 container or use the existing Docker-issued token to register. Verify the connection with `capabilities --json '{}'`.
 
-An `http://` endpoint, so the bearer token travels unencrypted on that network. Only use it on the
+With an `http://` endpoint the bearer token travels unencrypted on that network. Only use it on the
 user's trusted LAN; use an appropriately secured HTTPS endpoint if remote access is required.
 
 Arguments are `--name value`. Lists and objects are JSON: `--pick '[3,7]'`, `--assets '["01M6...","01M6..."]'`,
