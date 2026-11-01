@@ -65,11 +65,10 @@ the policy stricter, never looser.
 </td>
 <td valign="top">
 
-### 📱 A person's opinion, when you want one
-Most picks never need a person: the agent reads the contact sheet and links. When someone does want a say,
-`prop share` turns a selection into a mobile-friendly page with no login: zoomable images, video segments that
-loop between in and out points, and the licence and credit for each item. They tap **want / reject / ★** and
-add a comment, and the agent reads the answers back with `share_feedback`.
+### 🔗 Share a selection
+The agent picks from the contact sheet and links; nobody has to sign off. To show someone what it picked,
+`prop share` turns a selection into a page with no login: zoomable images, video segments that loop between
+in and out points, and the licence and credit for each item. If you want different picks, tell the agent.
 
 </td>
 </tr>
@@ -170,8 +169,7 @@ prop link --plan_id P1
 prop credits project/Episode12
 ```
 
-Want a person to look before delivery? Optional: `prop share --selection_id S1`, then `prop share_feedback
-<token>` reads back their picks. Bulk restocking runs as a background job you can pause:
+To show someone the picks: `prop share --selection_id S1` gives a link. Bulk restocking runs as a background job you can pause:
 `prop pull pull.yaml --budget 1G`.
 
 ```mermaid
@@ -192,7 +190,7 @@ sequenceDiagram
 ## 🤖 Plug it into your agent
 
 **MCP** (stdio). The default tool set is deliberately small: `search`, `remote`, `fetch`, `link`, `credits`,
-`share`, `share_feedback`, `job` and `capabilities`. Results come back as `structuredContent`, and contact
+`share`, `job` and `capabilities`. Results come back as `structuredContent`, and contact
 sheets as image content.
 
 ```json
@@ -235,8 +233,7 @@ flowchart LR
     WK --> IX[Index<br/>EmbeddingGemma 2 + FTS5]
     IX --> S[search --sheet]
     S --> L[link --plan → link]
-    S -.->|optional| SH[share → 📱]
-    SH -.-> L
+    S -.->|optional| SH[share link 🔗]
     L --> PR[📁 project/<br/>files + assets.json]
     PR --> CR[credits]
 ```

@@ -180,8 +180,8 @@
           mediaHtml = `<img src="${mediaUrl}" alt="${item.title}" loading="lazy">`;
         }
 
-        const currentVerdict = item.verdict || null;
-        const currentComment = item.comment || "";
+        // const currentVerdict = item.verdict || null;
+        // const currentComment = item.comment || "";
 
         card.innerHTML = `
           <div class="media-wrapper">${mediaHtml}</div>
@@ -194,6 +194,7 @@
               ${item.source_url ? `<a href="${item.source_url}" target="_blank" class="badge badge-link">Source ↗</a>` : ""}
             </div>
             <div class="caption">${item.caption || item.description || ""}</div>
+            <!-- Review is off: a share is for looking. Put the vote row and comment box back to collect feedback.
             <div class="vote-row">
               <button class="btn btn-want ${currentVerdict === 'want' ? 'active' : ''}" onclick="submitFeedback(${item.pos}, 'want')">✓ Want</button>
               <button class="btn btn-reject ${currentVerdict === 'reject' ? 'active' : ''}" onclick="submitFeedback(${item.pos}, 'reject')">✕ Reject</button>
@@ -203,6 +204,7 @@
               <button class="btn-send" onclick="sendComment(${item.pos})">Send</button>
             </div>
             <div class="status-msg" id="msg-${item.pos}">Feedback saved!</div>
+            -->
           </div>
         `;
         grid.appendChild(card);
@@ -212,6 +214,7 @@
     }
   }
 
+  /* Review is off (see the card markup above).
   async function submitFeedback(pos, verdict) {
     const cmtInput = document.getElementById(`cmt-${pos}`);
     const comment = cmtInput ? cmtInput.value : "";
@@ -241,6 +244,7 @@
       console.error("Failed to submit feedback", e);
     }
   }
+  */
 
   loadItems();
 </script>
