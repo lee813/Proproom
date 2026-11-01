@@ -1,20 +1,44 @@
 ---
 name: proproom
-description: Find, fetch and deliver footage, photos, music and sound for a video project from the Proproom media library on FNOS. Use when an episode needs stock or archive material, when the user asks for "a link of X", when importing a project's media, or when restocking the library from Wikimedia Commons or archive.org.
+description: Find, fetch and deliver footage, photos, music and sound for a video project from a Docker-hosted Proproom media library. Use when an episode needs stock or archive material, when the user asks for "a link of X", when importing a project's media, or when restocking the library from Wikimedia Commons or archive.org.
 ---
 
 # Proproom
 
-Proproom is a media library for agents, running on FNOS. It searches local media by text and by picture, fetches from
+Proproom is a Docker-hosted media library for agents. It searches local media by text and by picture, fetches from
 remote sources (Wikimedia Commons, archive.org, web captures), copies picks into a project folder, and writes the credits.
 
 ## How to call it
 
 Every operation is a `prop` command that prints JSON.
 
-- On FNOS: `docker exec proproom prop <operation> ...`
-- From the Mac: `ssh fnos 'docker exec proproom prop <operation> ...'`
+- On the Docker host: `docker exec proproom prop <operation> ...`
+- From this Mac, use the direct HTTP client:
+  `python3 /Users/KAMITA/Documents/Proproom/tools/prop_http.py <operation> --json '<arguments>'`.
+  For example: `python3 /Users/KAMITA/Documents/Proproom/tools/prop_http.py search --json '{"query":"US dollar"}'`.
+  It connects to `http://192.168.0.113:8765` (override with `PROP_SERVER`) without SSH. On first use it registers
+  against the same Docker instance as described below. Do not fall back to SSH or a separate local library.
 - As MCP: `docker exec -i proproom prop mcp` (same operations as tools).
+
+### First-time Docker registration
+
+The container generates an instance token on its first start and keeps it across restarts. On the first HTTP call,
+the client checks the Mac Keychain by instance ID. If absent, and Docker is available through an authorized non-SSH
+context, it reads the token directly from the matching container using `docker exec proproom prop credential`, checks
+the instance ID, verifies the token with the server, and saves it to Keychain. It captures the credential privately:
+never print it in chat or logs. Subsequent calls use Keychain without Docker, SSH or a mounted share.
+
+When Docker is not directly available on this Mac, register once with
+`python3 /Users/KAMITA/Documents/Proproom/tools/prop_http.py register`; enter the Docker-issued token into the hidden
+prompt, never in chat or a command argument. The token can be retrieved by an authorized operator from the container
+with `docker exec proproom prop credential`. Do not rotate it, bypass a denied browser permission or silently create
+another library. `PROP_DOCKER_CONTAINER` selects a different container name. SSH Docker contexts are not used.
+
+The `prop credential` command must be present in the running image; if an older image does not have it, upgrade the
+container or use the existing Docker-issued token to register. Verify the connection with `capabilities --json '{}'`.
+
+The configured LAN endpoint uses HTTP, so the bearer token travels unencrypted on that network. Only use it on the
+user's trusted LAN; use an appropriately secured HTTPS endpoint if remote access is required.
 
 Arguments are `--name value`. Lists and objects are JSON: `--pick '[3,7]'`, `--assets '["01M6...","01M6..."]'`,
 `--kind '["footage"]'`. `prop capabilities` lists every operation and its schema.
@@ -22,8 +46,8 @@ Arguments are `--name value`. Lists and objects are JSON: `--pick '[3,7]'`, `--a
 Errors come back as `{"error": {"code", "message", "hint"}}`. A bare `500 Internal Server Error` usually means a
 required argument is missing (known gap).
 
-Paths in results (`sheet`, `file`) are relative to the library: `/vol1/1000/Codex/Causcape/assets/library/` on FNOS.
-Projects are given relative to the Causcape root, e.g. `project/Episode12`.
+Paths in results (`sheet`, `file`) are relative to the configured library root. In this deployment, projects are
+relative to the Causcape root, e.g. `project/Episode12`.
 
 ## The normal flow
 

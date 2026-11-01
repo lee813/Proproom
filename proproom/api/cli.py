@@ -4,6 +4,7 @@ the standard error object on stderr with exit code 2.
     prop init                      create / migrate the library and print where it is
     prop serve                     run propd (HTTP + share pages) on :8765
     prop mcp                       run MCP JSON-RPC server over stdio
+    prop credential                read this container's existing management credential for registration
     prop capabilities              same as the `capabilities` operation
     prop db status | migrate
     prop <operation> [args...] [--key value …]
@@ -93,6 +94,16 @@ def main(argv: list[str] | None = None) -> None:
             from .mcp import run_mcp_server  # noqa: PLC0415
             include_admin = "--admin" in ns.rest
             run_mcp_server(include_admin=include_admin)
+            return
+
+        if cmd == "credential":
+            # This is a local Docker-exec command, not an HTTP operation. Never boot or create a library here.
+            from ..core.paths import resolve_home
+            home = resolve_home()
+            instance_id = client._instance_id(home)
+            if instance_id is None or not home.token.is_file():
+                raise ProproomError("not_initialized", "The Docker container has not initialized its library")
+            _emit({"instance_id": instance_id, "token": bootstrap.read_token(home)})
             return
 
         if cmd in REGISTRY and cmd != "db_status" and (server := client.find("cli")) is not None:
