@@ -169,6 +169,9 @@ prop link --plan_id P1
 prop credits project/Episode12
 ```
 
+Agents that load skills can use [`skills/proproom/SKILL.md`](skills/proproom/SKILL.md): copy or link the folder into
+the agent's skills directory (for example `~/.claude/skills/` or `~/.codex/skills/`).
+
 To show someone the picks: `prop share --selection_id S1` gives a link. Bulk restocking runs as a background job you can pause:
 `prop pull pull.yaml --budget 1G`.
 
