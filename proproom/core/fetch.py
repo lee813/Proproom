@@ -101,7 +101,7 @@ def remote(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         raise ProproomError("unknown_source", f"Source plugin '{source_name}' not available")
 
     source_ctx = pm.get_source_context(source_name)
-    req = SearchRequest(query=query, limit=limit, cursor=cursor)
+    req = SearchRequest(query=query, kind=args.get("kind"), limit=limit, cursor=cursor)
 
     cand_page = run_sync(plugin.instance.search(source_ctx, req))
 

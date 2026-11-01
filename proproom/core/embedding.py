@@ -13,11 +13,18 @@ from ..sdk.errors import ProproomError
 from ..sdk.types import EmbeddingBatch
 
 
-def find(pm: PluginManager) -> LoadedPlugin:
+def loaded(pm: PluginManager) -> LoadedPlugin | None:
     for plugin in pm.plugins.values():
         if "embedder" in plugin.types and plugin.instance and plugin.manifest.get("plugin", {}).get("status") != "stub":
             return plugin
-    raise ProproomError("no_embedder", "No embedder plugin is loaded")
+    return None
+
+
+def find(pm: PluginManager) -> LoadedPlugin:
+    plugin = loaded(pm)
+    if plugin is None:
+        raise ProproomError("no_embedder", "No embedder plugin is loaded")
+    return plugin
 
 
 def context(home: Home, plugin: LoadedPlugin, log: logging.Logger) -> EmbedContext:

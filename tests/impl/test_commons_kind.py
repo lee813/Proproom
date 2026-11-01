@@ -34,3 +34,15 @@ def test_a_video_is_footage():
     vp9 = [{"type": "video/webm; codecs=\"vp9, opus\"", "src": "https://upload.wikimedia.org/x.webm", "width": 1920,
             "height": 1080, "transcodekey": "1080p.vp9.webm"}]
     assert _kind("video/webm", vp9) == "footage"
+
+
+def _ogg_kind(mediatype):
+    page = _page("application/ogg", [])
+    page["query"]["pages"]["1"]["imageinfo"][0]["mediatype"] = mediatype
+    ctx = SourceContext(plugin="commons", log=logging.getLogger("t"), config={}, http=FakeHttp({"": page}), keys={})
+    return asyncio.run(Commons().resolve(ctx, SourceRef("commons", "File:X.ogv"))).kind
+
+
+def test_ogg_video_is_footage_and_ogg_audio_is_music():
+    """Commons gives both the MIME type application/ogg; its `mediatype` tells them apart."""
+    assert _ogg_kind("VIDEO") == "footage" and _ogg_kind("AUDIO") == "music"

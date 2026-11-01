@@ -45,7 +45,7 @@ def test_pull_caps_repeated_transient_errors(ctx, conn, nas, monkeypatch):
         pull_and_drain(ctx, nas)
     row = conn.execute("SELECT decision, reason, error_attempts, last_error FROM pull_seen").fetchone()
     assert len(attempts) == 5
-    assert tuple(row) == ("error", "too_many_errors", 5, "network unavailable")
+    assert tuple(row) == ("error", "too_many_errors", 5, "ConnectionError: network unavailable")
 
 
 def test_rejected_candidate_is_rechecked_when_policy_changes(ctx, conn, nas, fake_download, monkeypatch):
