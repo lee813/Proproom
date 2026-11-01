@@ -6,9 +6,11 @@
 
 **Your agent finds the footage, sees it, picks it, clears the rights, drops it into the project and writes the credits.**
 <br>A self-hosted media library for open-licensed images, video and audio. **One container. One folder.**
+<br>Search by meaning with **EmbeddingGemma 2**, which fits on a **4 GB VRAM** GPU.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
+![EmbeddingGemma 2 on 4 GB VRAM](https://img.shields.io/badge/EmbeddingGemma%202-4%20GB%20VRAM-76B900?logo=nvidia&logoColor=white)
 ![SQLite + sqlite-vec](https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-ready-8A2BE2)
 ![Docker](https://img.shields.io/badge/docker-one%20container-2496ED?logo=docker&logoColor=white)
@@ -32,62 +34,55 @@ pulls what the script calls for. **In Proproom, the prop master is your agent.**
 
 ## ✨ Highlights
 
+<div align="center">
+
+| 🧠 **1 model** | 🎮 **4 GB VRAM** | 🏠 **100% local** | 📦 **1 container** |
+|:---:|:---:|:---:|:---:|
+| EmbeddingGemma 2 for words, photos and video | 3.4 GB measured, whole process | search and indexing never leave your box | SQLite in one folder, no Postgres or Redis |
+
+</div>
+
+### 🧠 It *sees* your footage, on your own GPU
+
+**EmbeddingGemma 2** puts words, photos and video frames in **one vector space**. Search
+`"oil tanker in a canal"` and you get the tanker, even when the file is called `DSC_0412.jpg` and nobody ever
+tagged it. The model runs **on your own GPU**: no cloud API, no per-search bill, and the library never leaves your
+NAS. It **fits on a 4 GB card**: weights 1.4 GiB, the whole process 3.4 GB, measured. The container keeps **one
+copy** of each model and frees it after 10 idle minutes.
+
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 👀 Agents that can *see*
-`search --sheet` returns **one numbered 4×3 contact sheet**, not twelve full-size images. Tiles are letterboxed,
-never centre-cropped, so heads, title pages and corner logos survive. Each tile shows the licence, resolution
-and duration, plus its warnings in words (`⚠ watermark`, `used: <project>`). The agent answers *"3 and 7"*, and
-the `selection_id` pins those numbers, so nothing is re-searched.
+### 👀 Contact sheets, not file names
+`search --sheet` hands the agent **one numbered 4×3 sheet** instead of twelve full-size images. Tiles are
+letterboxed, never cropped, and carry their warnings in words (`⚠ watermark`, `used: <project>`). The agent
+answers *"3 and 7"*. That's the whole conversation.
 
 </td>
 <td width="50%" valign="top">
 
-### 🔎 Hybrid multimodal search
-**EmbeddingGemma 2** puts text, images, video and audio in one vector space. It's fused with FTS5 keyword
-search by **reciprocal rank fusion (RRF)**. Filters apply *during* recall, not after the top 12. A trigram index
-handles Chinese, so `托克维尔` finds `托克维尔肖像`. `--explain` shows how each retriever ranked a result and
-which fields it hit.
+### 🔀 Meaning **and** keywords
+Vector search fused with FTS5 keyword search by **reciprocal rank fusion**. A trigram index handles Chinese, so
+`托克维尔` finds `托克维尔肖像`. `--explain` shows which retriever found each hit; `vec_distance` says how close
+it was.
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-### ⚖️ Rights are first-class data
-Every asset keeps its source, licence text and URL, and the basis for using it: `license`, `public_domain`
-*with a stated reason*, `provider_license`, `quotation` or `own_work`. NC, ND, fair use and wire-agency photos
-are denied by default. **Anything uncertain stays out of search until a person reviews it.** Plugins can make
-the policy stricter, never looser.
+### ⚖️ Usable by default, blocked on evidence
+Every file keeps its source, licence and the basis for using it. Only **real evidence** blocks one: an NC, ND or
+editorial licence, a news-agency photo, a deletion or copyvio tag. Missing info doesn't lock your own footage away;
+it's noted and the file stays usable.
 
 </td>
 <td valign="top">
 
-### 🔗 Share a selection
-The agent picks from the contact sheet and links; nobody has to sign off. To show someone what it picked,
-`prop share` turns a selection into a page with no login: zoomable images, video segments that loop between
-in and out points, and the licence and credit for each item. If you want different picks, tell the agent.
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### 📦 Delivery you can trust
-`link --plan` is a **dry run**: it lists the files it will write, any conflicts, items the policy blocks, and
-obligations such as *share-alike*. Then `link --plan_id` writes for real: temp file, manifest patch, **atomic
-rename**, **reflink** where the filesystem supports it, every step journaled. If it's interrupted, the next boot
-rolls the delivery back or finishes it.
-
-</td>
-<td valign="top">
-
-### 📝 Credits, written for you
-`prop credits <project>` produces the attribution block, grouped by use: open-licensed media, source pages shown
-on screen, and data or base maps. Each line has title, author, source, licence with link, and what was changed.
-The credits are built from the evidence recorded at delivery.
+### 📝 Credits write themselves
+`prop credits <project>` prints the attribution block for everything delivered: title, author, source, licence
+with link, and what was changed, grouped by use. Built from the evidence recorded at delivery, not retyped.
 
 </td>
 </tr>
@@ -95,35 +90,51 @@ The credits are built from the evidence recorded at delivery.
 <td valign="top">
 
 ### 🎞️ Video-native
-Scene detection cuts footage into **2–10 s segments**, and each segment can be found on its own. A segment
-inherits its parent's text score, and no parent fills more than two slots in a result list. Delivery can record
-a clip in the manifest only, or cut the file (`--cut fast` / `--cut exact`).
+Scene detection cuts footage into **2–10 s segments**, each searchable on its own. A clip takes one slot in the
+results, at the segment that matched best. Delivery records the clip in the manifest, or cuts the file
+(`--cut fast` / `--cut exact`).
 
 </td>
 <td valign="top">
 
-### 🧠 Automatic analysis
-A background worker boxes **faces, plates, logos, text and the main subject** (YuNet + OWLv2). The boxes give
-each asset a crop focus, blur boxes for bystanders' faces and number plates, and a `--fits 9:16` check for
-Shorts. The worker also measures **loudness** and flags **watermarks and burned-in subtitles**.
+### 🔍 It looks at every file
+A background worker boxes **faces** (YuNet) and **plates, logos, text and main subjects** (OWLv2), reads frames
+with Tesseract to flag **watermarks and burned-in subtitles**, and measures **loudness** (LUFS). The flags show
+up right on the contact sheet.
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-### 🔌 Three entry points, one API
-CLI, HTTP and **MCP** are all generated from a single operation registry with JSON schemas. You get
-`idempotency_key` on every side effect, background jobs you can pause and resume, cursors, and structured errors
-(`code`, `hint`, `retryable`).
+### 🌍 Restock while you sleep
+Point it at **Wikimedia Commons** or the **Internet Archive** with a spec and a budget: `prop pull --budget 1G`.
+The budget is split by share, each line keeps to its kind, and a video too big for its share is never
+downloaded. New files are indexed when the pull finishes.
 
 </td>
 <td valign="top">
 
-### 🗄️ Zero-ops storage
-**SQLite + sqlite-vec** in one folder on your NAS: no Postgres and no Redis. Blobs are **content-addressed and
-immutable**: projects get a reflink or a copy, so editing a project never touches the library. `prop verify`
-re-hashes the blobs to catch any byte that changed.
+### 📦 Delivery you can trust
+`link --plan` is a **dry run**: files it will write, conflicts, blocked items, share-alike obligations. Then it
+writes for real: temp file, **atomic rename**, **reflink** where the filesystem allows, every step journaled. A
+crash mid-delivery is rolled back or finished on the next boot.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🔗 One link to show the picks
+`prop share` turns a selection into a **view-only page**, no login: zoomable images, video segments looping
+between their in and out points, and each item's licence and credit.
+
+</td>
+<td valign="top">
+
+### 🔌 Plugs into any agent
+CLI, HTTP and **MCP** from one operation registry, with JSON schemas, idempotency keys and resumable jobs. Drop
+in [`skills/proproom`](skills/proproom/SKILL.md) and your agent knows the whole workflow.
 
 </td>
 </tr>
@@ -292,6 +303,7 @@ falling back to the CPU, and Docker restarts it.
 - [x] Crash recovery, `verify`, `repair`, `eval` (recall@k / nDCG on your own queries)
 - [ ] Prebuilt images on GHCR (`:latest-cuda`, `:latest-intel`, `:latest-cpu`)
 - [ ] Intel / OpenVINO and CPU tiers, with measured throughput
+- [ ] Use the detected boxes: crop focus, blurring bystanders' faces and plates, a `--fits 9:16` check
 - [ ] Watermark detection based on embedding similarity, alongside OCR
 - [ ] Plugin contract runner (`prop plugin_test`)
 
