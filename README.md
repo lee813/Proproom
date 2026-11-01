@@ -65,10 +65,11 @@ the policy stricter, never looser.
 </td>
 <td valign="top">
 
-### 📱 Human review in one link
-`prop share` turns a selection into a mobile-friendly page with no login. It shows zoomable images, video
-segments that loop between in and out points, and the licence and credit for each item. The reviewer taps
-**want / reject / ★** and adds a comment, and the agent reads the answers back with `share_feedback`.
+### 📱 A person's opinion, when you want one
+Most picks never need a person: the agent reads the contact sheet and links. When someone does want a say,
+`prop share` turns a selection into a mobile-friendly page with no login: zoomable images, video segments that
+loop between in and out points, and the licence and credit for each item. They tap **want / reject / ★** and
+add a comment, and the agent reads the answers back with `share_feedback`.
 
 </td>
 </tr>
@@ -161,32 +162,26 @@ prop search "oil tanker in a canal" --k 12 --sheet
 prop remote commons "Tocqueville portrait" --sheet
 prop fetch --selection_id S1 --pick '[2]'
 
-# 3. Ask a human, on their phone
-prop share --selection_id S1 --title "Episode 12: tankers"
-prop share_feedback <token>
-
-# 4. Dry-run the delivery, then deliver
+# 3. The agent picks from the sheet. Dry-run the delivery, then deliver
 prop link --project project/Episode12 --selection_id S1 --pick '[3,7]' --plan
 prop link --plan_id P1
 
-# 5. Write the credits
+# 4. Write the credits
 prop credits project/Episode12
 ```
 
-Bulk restocking runs as a background job you can pause: `prop pull pull.yaml --budget 1G`.
+Want a person to look before delivery? Optional: `prop share --selection_id S1`, then `prop share_feedback
+<token>` reads back their picks. Bulk restocking runs as a background job you can pause:
+`prop pull pull.yaml --budget 1G`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant A as 🤖 Agent
     participant P as 🎬 Proproom
-    participant H as 📱 Human
     A->>P: search "car factory aerial" --sheet
     P-->>A: selection S + 4×3 contact sheet
-    A->>P: share S
-    P-->>H: mobile review link
-    H->>P: want 3, 7 · reject 5
-    A->>P: share_feedback
+    Note over A: looks at the sheet, picks 3 and 7
     A->>P: link --pick 3,7 --plan
     P-->>A: files, conflicts, obligations
     A->>P: link --plan_id
@@ -239,8 +234,9 @@ flowchart LR
     B --> WK[Worker<br/>regions · scenes · loudness · OCR]
     WK --> IX[Index<br/>EmbeddingGemma 2 + FTS5]
     IX --> S[search --sheet]
-    S --> SH[share → 📱]
-    SH --> L[link --plan → link]
+    S --> L[link --plan → link]
+    S -.->|optional| SH[share → 📱]
+    SH -.-> L
     L --> PR[📁 project/<br/>files + assets.json]
     PR --> CR[credits]
 ```
