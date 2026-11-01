@@ -88,6 +88,7 @@ def test_crashing_policy_plugin_fails_closed(ctx, fake_download):
     with pytest.raises(ProproomError) as exc_info:
         REGISTRY["fetch"](ctx, {"source": "mock_src", "external_id": "item_policy_crash"})
     assert exc_info.value.code == "rights_denied"
+    assert fake_download == []
 
 
 def test_provenance_conflict_raises_error_strictly(conn):

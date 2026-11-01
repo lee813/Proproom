@@ -17,7 +17,6 @@ from support import gap, ingest, install_source
 
 from proproom.api.registry import REGISTRY
 from proproom.core import db, dedupe
-from proproom.core.plugins import LoadedPlugin
 from proproom.sdk.types import (Candidate, CandidatePage, RepresentationOffer, ResolvedSource, RightsEvidence,
                                 SourceRef)
 
@@ -57,18 +56,6 @@ def test_fetch_weighs_all_evidence(ctx, fake_download):
                                       RightsEvidence(basis="license", license_id="CC BY-NC 4.0")]))
     with pytest.raises(Exception):
         REGISTRY["fetch"](ctx, {"source": "fake", "external_id": "two"})
-    assert fake_download == []
-
-
-def test_crashing_policy_plugin_fails_closed(ctx, fake_download):
-    class Boom:
-        def decide(self, ctx_, asset):
-            raise RuntimeError("policy plugin crashed")
-
-    pm = install_source(ctx, "fake", _Src([RightsEvidence(basis="license", license_id="CC BY 4.0")]))
-    pm.plugins["boom"] = LoadedPlugin("boom", "0", "0" * 64, ["policy"], "dir", {}, Boom())
-    with pytest.raises(Exception):
-        REGISTRY["fetch"](ctx, {"source": "fake", "external_id": "boom"})
     assert fake_download == []
 
 
