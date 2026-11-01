@@ -14,6 +14,7 @@ import sqlite3
 from typing import Any
 
 from .ids import ulid, utcnow
+from . import hardware
 from .plugins import run_sync
 from ..sdk.context import AnalysisContext
 from ..sdk.errors import ProproomError
@@ -88,6 +89,26 @@ def _run(ctx: Any, conn: sqlite3.Connection, p: Any, role: str, rep: sqlite3.Row
     actx = AnalysisContext(plugin=p.name, log=logging.getLogger(f"proproom.plugin.{p.name}"),
                            config=ctx.booted.config.get(p.name, {}), open_representation=open_representation)
     now = utcnow()
+    # Persist the attempt before executing plugin code. If the process is killed (e.g. by an OOM),
+    # the retry limit and backoff still apply instead of selecting this same pair on every boot.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        prev = conn.execute("SELECT state, attempts, error, next_attempt, updated FROM analysis_run WHERE representation_id = ? AND plugin = ? "
+                            "AND plugin_version = ?", (rep["id"], p.name, p.version)).fetchone()
+        attempts = prev["attempts"] + 1 if prev else 1
+        retry = (datetime.now(timezone.utc) + timedelta(minutes=4 ** (attempts - 1))).isoformat(
+            timespec="milliseconds").replace("+00:00", "Z")
+        error = json.dumps({"code": "interrupted", "message": "Analysis attempt did not finish"})
+        conn.execute(
+            "INSERT INTO analysis_run(representation_id, plugin, plugin_version, state, attempts, error, next_attempt, "
+            "updated) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?) ON CONFLICT(representation_id, plugin, plugin_version) "
+            "DO UPDATE SET state = excluded.state, attempts = excluded.attempts, error = excluded.error, "
+            "next_attempt = excluded.next_attempt, updated = excluded.updated",
+            (rep["id"], p.name, p.version, attempts, error, retry, now))
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
     try:
         if role == "analyzer":
             result = run_sync(p.instance.analyze(actx, rep["id"]))
@@ -98,6 +119,28 @@ def _run(ctx: Any, conn: sqlite3.Connection, p: Any, role: str, rep: sqlite3.Row
             writes = _segment_writes(rep, run_sync(p.instance.segment(actx, rep["id"])))
         error = None
     except Exception as e:  # kept on the analysis_run row and retried with backoff, never dropped silently
+        try:
+            hardware.require_gpu()
+        except ProproomError as gpu_error:
+            if gpu_error.code != "gpu_lost":
+                raise
+            # The machine lost its GPU during this attempt. Do not consume an asset's retries for an
+            # infrastructure outage; restore the previous record and let the server restart as usual.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if prev is None:
+                    conn.execute("DELETE FROM analysis_run WHERE representation_id = ? AND plugin = ? AND plugin_version = ?",
+                                 (rep["id"], p.name, p.version))
+                else:
+                    conn.execute("UPDATE analysis_run SET state = ?, attempts = ?, error = ?, next_attempt = ?, updated = ? "
+                                 "WHERE representation_id = ? AND plugin = ? AND plugin_version = ?",
+                                 (prev["state"], prev["attempts"], prev["error"], prev["next_attempt"], prev["updated"],
+                                  rep["id"], p.name, p.version))
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            raise
         log.warning("%s %s failed on %s: %s", role, p.name, rep["id"], e)
         if isinstance(e, ProproomError):
             error = {"code": e.code, "message": e.message[:500]}
@@ -109,9 +152,6 @@ def _run(ctx: Any, conn: sqlite3.Connection, p: Any, role: str, rep: sqlite3.Row
     try:
         for sql, params in writes:
             conn.execute(sql, params)
-        prev = conn.execute("SELECT attempts FROM analysis_run WHERE representation_id = ? AND plugin = ? "
-                            "AND plugin_version = ?", (rep["id"], p.name, p.version)).fetchone()
-        attempts = prev["attempts"] + 1 if prev else 1
         retry = None
         if error:
             retry = (datetime.now(timezone.utc) + timedelta(minutes=4 ** (attempts - 1))

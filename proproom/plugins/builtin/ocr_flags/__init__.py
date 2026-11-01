@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
 import subprocess
 
@@ -29,17 +30,19 @@ MIN_CONF = 80
 MIN_WORD_CHARS = 3
 MIN_WORDS = 2
 MIN_MARK_CHARS = 4
+OCR_MAX_SIDE = 2048
 CORNERS = {"top_left": (0, 0), "top_right": (0.75, 0), "bottom_left": (0, 0.85), "bottom_right": (0.75, 0.85)}
 
 
 def _words(image, languages: str, psm: int) -> tuple[list[str], float]:
     """Confident words and the fraction of the image their boxes cover."""
-    scale = 2 if image.height < 600 else 1
-    img = image.resize((image.width * scale, image.height * scale)) if scale > 1 else image
+    scale = min(2 if image.height < 600 else 1, OCR_MAX_SIDE / max(image.size))
+    img = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale)))) if scale != 1 else image
     buf = io.BytesIO()
     img.convert("L").save(buf, format="PNG")
     res = subprocess.run(["tesseract", "stdin", "stdout", "-l", languages, "--psm", str(psm), "tsv"],
-                         input=buf.getvalue(), capture_output=True, timeout=120)
+                         input=buf.getvalue(), capture_output=True, timeout=120,
+                         env={**os.environ, "OMP_THREAD_LIMIT": "1"})
     if res.returncode != 0:
         raise ProproomError("ocr_failed", res.stderr.decode(errors="replace")[:300])
     words, area = [], 0.0
