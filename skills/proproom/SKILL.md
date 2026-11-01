@@ -13,11 +13,12 @@ remote sources (Wikimedia Commons, archive.org, web captures), copies picks into
 Every operation is a `prop` command that prints JSON.
 
 - On the Docker host: `docker exec proproom prop <operation> ...`
-- From this Mac, use the direct HTTP client:
-  `python3 /Users/KAMITA/Documents/Proproom/tools/prop_http.py <operation> --json '<arguments>'`.
-  For example: `python3 /Users/KAMITA/Documents/Proproom/tools/prop_http.py search --json '{"query":"US dollar"}'`.
-  It connects to `http://192.168.0.113:8765` (override with `PROP_SERVER`) without SSH. On first use it registers
-  against the same Docker instance as described below. Do not fall back to SSH or a separate local library.
+- From another machine, use the direct HTTP client from a Proproom checkout:
+  `python3 tools/prop_http.py <operation> --json '<arguments>'`.
+  For example: `python3 tools/prop_http.py search --json '{"query":"US dollar"}'`.
+  Set `PROP_SERVER` to the server's base URL (or pass `--server`), e.g. `http://host:8765`. It connects without SSH.
+  On first use it registers against the same Docker instance as described below. Do not fall back to SSH or a
+  separate local library.
 - As MCP: `docker exec -i proproom prop mcp` (same operations as tools).
 
 ### First-time Docker registration
@@ -29,7 +30,7 @@ the instance ID, verifies the token with the server, and saves it to Keychain. I
 never print it in chat or logs. Subsequent calls use Keychain without Docker, SSH or a mounted share.
 
 When Docker is not directly available on this Mac, register once with
-`python3 /Users/KAMITA/Documents/Proproom/tools/prop_http.py register`; enter the Docker-issued token into the hidden
+`python3 tools/prop_http.py register`; enter the Docker-issued token into the hidden
 prompt, never in chat or a command argument. The token can be retrieved by an authorized operator from the container
 with `docker exec proproom prop credential`. Do not rotate it, bypass a denied browser permission or silently create
 another library. `PROP_DOCKER_CONTAINER` selects a different container name. SSH Docker contexts are not used.
@@ -37,7 +38,7 @@ another library. `PROP_DOCKER_CONTAINER` selects a different container name. SSH
 The `prop credential` command must be present in the running image; if an older image does not have it, upgrade the
 container or use the existing Docker-issued token to register. Verify the connection with `capabilities --json '{}'`.
 
-The configured LAN endpoint uses HTTP, so the bearer token travels unencrypted on that network. Only use it on the
+An `http://` endpoint, so the bearer token travels unencrypted on that network. Only use it on the
 user's trusted LAN; use an appropriately secured HTTPS endpoint if remote access is required.
 
 Arguments are `--name value`. Lists and objects are JSON: `--pick '[3,7]'`, `--assets '["01M6...","01M6..."]'`,
@@ -87,7 +88,7 @@ unrelated, because search always fills the list.
 prop share --selection_id S1 --title "Trains"      # or --assets '["<asset_id>", ...]'
 ```
 
-Returns `url` (`http://192.168.0.113:8765/s/<token>`). The page is view-only. `prop share_revoke --share <token>`
+Returns `url` (`<server>/s/<token>`). The page is view-only. `prop share_revoke --share <token>`
 turns a link off.
 
 For a share URL `<url>`, its token also authorizes these HTTP endpoints:

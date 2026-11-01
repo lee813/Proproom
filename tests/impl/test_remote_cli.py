@@ -13,6 +13,7 @@ TOKEN = "ab" * 22
 
 def test_remote_cli_sends_request_without_logging_token(monkeypatch, capsys):
     calls = []
+    monkeypatch.setenv("PROP_SERVER", "http://nas.test:8765")
     monkeypatch.setattr(sys, "argv", ["prop_http", "search", "--json", '{"query":"US dollar"}'])
     monkeypatch.setattr(remote_cli, "_credential", lambda opener, server, container: TOKEN)
 
@@ -30,14 +31,23 @@ def test_remote_cli_sends_request_without_logging_token(monkeypatch, capsys):
     monkeypatch.setattr(remote_cli.urllib.request, "build_opener", lambda *args: Opener())
     assert remote_cli.main() == 0
     request, timeout = calls[0]
-    assert request.full_url == "http://192.168.0.113:8765/v1/ops/search" and timeout == 300
+    assert request.full_url == "http://nas.test:8765/v1/ops/search" and timeout == 300
     assert request.get_header("Authorization") == f"Bearer {TOKEN}"
     assert json.loads(request.data) == {"query": "US dollar"}
     output = capsys.readouterr()
     assert TOKEN not in output.out + output.err and json.loads(output.out) == {"selection_id": "S1"}
 
 
+def test_remote_cli_needs_a_server_and_reads_no_credentials_without_one(monkeypatch, capsys):
+    monkeypatch.delenv("PROP_SERVER", raising=False)
+    monkeypatch.setattr(sys, "argv", ["prop_http", "search"])
+    monkeypatch.setattr(remote_cli, "_credential", lambda *a: (_ for _ in ()).throw(AssertionError("read token")))
+    assert remote_cli.main() == 2
+    assert "PROP_SERVER" in capsys.readouterr().err
+
+
 def test_remote_cli_rejects_non_object_without_reading_credentials(monkeypatch, capsys):
+    monkeypatch.setenv("PROP_SERVER", "http://nas.test:8765")
     monkeypatch.setattr(sys, "argv", ["prop_http", "search", "--json", "[]"])
     monkeypatch.setattr(remote_cli, "_credential", lambda *a: (_ for _ in ()).throw(AssertionError("read token")))
     assert remote_cli.main() == 2

@@ -102,10 +102,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", help="register, or a Proproom operation such as search, remote, fetch or share")
     parser.add_argument("--json", default="{}", help="Operation arguments as a JSON object")
-    parser.add_argument("--server", default=os.environ.get("PROP_SERVER", "http://192.168.0.113:8765"))
+    parser.add_argument("--server", default=os.environ.get("PROP_SERVER"),
+                        help="Proproom base URL, e.g. http://host:8765 (default: $PROP_SERVER)")
     parser.add_argument("--container", default=os.environ.get("PROP_DOCKER_CONTAINER", "proproom"))
     args = parser.parse_args()
     try:
+        if not args.server:
+            raise ValueError("Set PROP_SERVER or pass --server with the Proproom base URL")
         data = json.loads(args.json)
         if not isinstance(data, dict):
             raise ValueError("--json must be an object")
