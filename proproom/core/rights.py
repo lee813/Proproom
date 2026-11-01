@@ -78,7 +78,7 @@ def evaluate_rights(
     decision: Decision = "allow"
 
     # Publisher check
-    if publisher and any(dp in publisher.lower() for dp in deny_publishers):
+    if publisher and any(re.search(r"(?<!\w)" + re.escape(dp) + r"(?!\w)", publisher.lower()) for dp in deny_publishers if dp):
         reasons.append({"code": "publisher_denied", "detail": f"Publisher '{publisher}' is restricted by policy."})
         return "deny", reasons, obligations
 
@@ -109,9 +109,9 @@ def evaluate_rights(
         reasons.append({"code": "own_work", "detail": "Own original creation."})
 
     elif basis == "public_domain":
-        valid_pd = {"pd-old", "pd-us-gov", "pd-mark", "cc0", "cc0-1.0", "public-domain"}
-        if pd_reason and pd_reason.lower() in valid_pd or norm_lic in valid_pd:
-            reasons.append({"code": "public_domain", "detail": f"Public domain basis ({pd_reason or norm_lic})."})
+        valid_pd = {"pd-old", "pd-us-gov", "pd-mark", "cc0", "cc0-1.0"}
+        if pd_reason and pd_reason.lower() in valid_pd:
+            reasons.append({"code": "public_domain", "detail": f"Public domain basis ({pd_reason})."})
         else:
             reasons.append({"code": "public_domain_unverified",
                             "detail": f"Public domain claim needs review ({pd_reason})."})
@@ -139,19 +139,28 @@ def evaluate_rights(
 
         # Check allow families
         matched_allow = False
-        for af in allow_families:
-            if af == "cc-by" and re.search(r"cc-by(?!-nc|-nd|-sa)", norm_lic):
+        if norm_lic == "public-domain":
+            valid_pd = {"pd-old", "pd-us-gov", "pd-mark", "cc0", "cc0-1.0"}
+            if pd_reason and pd_reason.lower() in valid_pd:
                 matched_allow = True
-                break
-            if af == "cc-by-sa" and "cc-by-sa" in norm_lic:
-                matched_allow = True
-                break
-            if af in ("cc0", "pd") and ("cc0" in norm_lic or "public-domain" in norm_lic):
-                matched_allow = True
-                break
-            if af == norm_lic:
-                matched_allow = True
-                break
+            else:
+                reasons.append({"code": "public_domain_unverified", "detail": "Public domain license requires specific pd_reason."})
+                if decision != "deny":
+                    decision = "review"
+        else:
+            for af in allow_families:
+                if af == "cc-by" and re.search(r"cc-by(?!-nc|-nd|-sa)", norm_lic):
+                    matched_allow = True
+                    break
+                if af == "cc-by-sa" and "cc-by-sa" in norm_lic:
+                    matched_allow = True
+                    break
+                if af == "cc0" and "cc0" in norm_lic:
+                    matched_allow = True
+                    break
+                if af == norm_lic:
+                    matched_allow = True
+                    break
 
         if matched_allow:
             reasons.append({"code": "license_allowed", "detail": f"License allowed: {norm_lic}"})

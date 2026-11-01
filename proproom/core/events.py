@@ -20,6 +20,10 @@ def publish_event(conn: sqlite3.Connection, kind: str, payload: dict[str, Any], 
     )
     event_id = cur.lastrowid
 
+    if subscribers is None:
+        rows = conn.execute("SELECT DISTINCT name, types FROM plugin_registry WHERE enabled = 1").fetchall()
+        subscribers = list({r["name"] for r in rows if "hook" in json.loads(r["types"])})
+
     if subscribers:
         for sub in subscribers:
             conn.execute(
@@ -40,21 +44,17 @@ def deliver_events(conn: sqlite3.Connection, plugin_instances: dict[str, Any]) -
 
     delivered_count = 0
     now = utcnow()
+    from .plugins import run_sync
     for r in rows:
         sub = r["subscriber"]
         inst = plugin_instances.get(sub)
         payload = json.loads(r["payload"])
         try:
-            if inst and hasattr(inst, "handle_event"):
-                inst.handle_event(r["kind"], payload)
-            conn.execute(
-                "UPDATE event_delivery SET state = 'delivered', attempts = attempts + 1 WHERE event_id = ? AND subscriber = ?",
-                (r["event_id"], sub),
-            )
+            if inst is None:
+                raise RuntimeError(f"Hook {sub} is unavailable")
+            run_sync(inst.handle(None, r["event_id"], r["kind"], payload))
+            conn.execute("UPDATE event_delivery SET state = 'delivered', attempts = attempts + 1 WHERE event_id = ? AND subscriber = ?", (r["event_id"], sub))
             delivered_count += 1
         except Exception as e:
-            conn.execute(
-                "UPDATE event_delivery SET state = 'failed', attempts = attempts + 1, last_error = ? WHERE event_id = ? AND subscriber = ?",
-                (str(e), r["event_id"], sub),
-            )
+            conn.execute("UPDATE event_delivery SET state = 'failed', attempts = attempts + 1, last_error = ? WHERE event_id = ? AND subscriber = ?", (str(e), r["event_id"], sub))
     return delivered_count

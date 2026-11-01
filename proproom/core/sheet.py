@@ -87,7 +87,41 @@ def render_contact_sheet(
                     target_h = max(1, int(src_h * scale))
                     loaded_img = src_rgb.resize((target_w, target_h), Image.Resampling.BILINEAR)
             except Exception:
-                loaded_img = None
+                import shutil
+                import subprocess
+                import tempfile
+                if shutil.which("ffmpeg"):
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp_frame:
+                            subprocess.run(
+                                ["ffmpeg", "-loglevel", "error", "-y", "-ss", "0.5", "-i", str(cell.image_path),
+                                 "-vframes", "1", tmp_frame.name],
+                                check=True, timeout=5
+                            )
+                            with Image.open(tmp_frame.name) as src:
+                                src_rgb = src.convert("RGB")
+                                src_w, src_h = src_rgb.size
+                                scale = min(thumb_box_w / src_w, thumb_box_h / src_h)
+                                target_w = max(1, int(src_w * scale))
+                                target_h = max(1, int(src_h * scale))
+                                loaded_img = src_rgb.resize((target_w, target_h), Image.Resampling.BILINEAR)
+                    except Exception:
+                        try:
+                            with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp_frame:
+                                subprocess.run(
+                                    ["ffmpeg", "-loglevel", "error", "-y", "-i", str(cell.image_path),
+                                     "-vframes", "1", tmp_frame.name],
+                                    check=True, timeout=5
+                                )
+                                with Image.open(tmp_frame.name) as src:
+                                    src_rgb = src.convert("RGB")
+                                    src_w, src_h = src_rgb.size
+                                    scale = min(thumb_box_w / src_w, thumb_box_h / src_h)
+                                    target_w = max(1, int(src_w * scale))
+                                    target_h = max(1, int(src_h * scale))
+                                    loaded_img = src_rgb.resize((target_w, target_h), Image.Resampling.BILINEAR)
+                        except Exception:
+                            loaded_img = None
 
         if loaded_img:
             tx = x0 + inner_pad + (thumb_box_w - loaded_img.width) // 2

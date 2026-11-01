@@ -7,11 +7,48 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+import struct
 from typing import Any
 
 from . import cjk, db, dedupe, sheet, store
 from .ids import ulid, utcnow
 from .paths import Home
+
+
+def search(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Execute hybrid search pipeline."""
+    b = ctx.booted
+    pm = ctx.pm()
+    conn = db.connect(b.home.db)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        res = execute_search(
+            conn=conn,
+            home=b.home,
+            query=args["query"],
+            kind=args.get("kind"),
+            license_filter=args.get("license"),
+            anchor=args.get("anchor"),
+            entity=args.get("entity"),
+            fits=args.get("fits"),
+            min_edge=args.get("min_edge"),
+            exclude_used_in=args.get("exclude_used_in"),
+            include_quotation=args.get("include_quotation", False),
+            sheet_requested=args.get("sheet", False),
+            explain=args.get("explain", False),
+            k=args.get("k", 12),
+            cursor=args.get("cursor"),
+            actor=ctx.actor,
+            plugin_manager=pm,
+        )
+        conn.execute("COMMIT")
+        return res
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
 
 
 def execute_search(
@@ -33,6 +70,8 @@ def execute_search(
     cursor: str | None = None,
     actor: str = "cli",
     qvec: bytes | None = None,
+    plugin_manager: Any = None,
+    mode: str = "hybrid",
 ) -> dict[str, Any]:
     """Execute hybrid search, persist selection and selection_items, optionally render sheet."""
     offset = 0
@@ -42,7 +81,42 @@ def execute_search(
         except Exception:
             offset = 0
 
-    # 1. Resolve entity filter if provided
+    # 1. Embed query if embedder available and space active
+    if qvec is None and plugin_manager is not None:
+        embedder = None
+        for p in getattr(plugin_manager, "plugins", {}).values():
+            inst = getattr(p, "instance", p)
+            if ("embedder" in p.types and inst and
+                    p.manifest.get("plugin", {}).get("status") != "stub"):
+                embedder = inst
+                break
+        if embedder:
+            space_row = conn.execute("SELECT id, vec_table, dim FROM embedding_space WHERE active = 1").fetchone()
+            if space_row:
+                import logging
+                from ..sdk.context import EmbedContext
+                from .plugins import run_sync
+                from . import hardware
+                hw = hardware.detect()
+                gpu = hw.get("tier") == "nvidia"
+                ectx = EmbedContext(
+                    plugin=getattr(embedder, "name", "embedder"),
+                    log=logging.getLogger("proproom.search"),
+                    config={},
+                    device="cuda" if gpu else "cpu",
+                    dtype=hw["devices"][0].get("dtype", "fp32") if gpu else "fp32",
+                    models_dir=str(home.dir("models")),
+                )
+                try:
+                    batch = run_sync(embedder.embed(ectx, [{"text": query, "prompt": "query"}]))
+                    if batch.vectors:
+                        v = batch.vectors[0]
+                        qvec = struct.pack(f"{len(v)}f", *v)
+                except Exception as e:
+                    import logging
+                    logging.getLogger("proproom.search").warning("Embed query failed: %s", e)
+
+    # 2. Resolve entity filter if provided
     matched_entity_assets: set[str] | None = None
     if entity:
         # Search entity table by labels/aliases/qid
@@ -68,6 +142,54 @@ def execute_search(
     latin_terms = [t.strip("\"'") for t in query.split() if not cjk.has_cjk(t) and t.strip("\"'")]
     fts_latin_query = " ".join(f'"{t}"*' for t in latin_terms) if latin_terms else None
 
+    # Build shared recall filters pushed directly into candidate queries (§7)
+    visibility = "(ar.decision = 'allow' OR (ar.decision = 'review' AND ar.basis = 'quotation'))" if include_quotation else "ar.decision = 'allow'"
+    filter_clauses = ["a.status = 'active'", visibility]
+    filter_params: list[Any] = []
+
+    if not include_quotation:
+        filter_clauses.append("ar.basis != 'quotation'")
+
+    if kind:
+        placeholders = ",".join("?" for _ in kind)
+        filter_clauses.append(f"a.kind IN ({placeholders})")
+        filter_params.extend(kind)
+
+    if anchor and anchor.lower() in ("person", "event", "data"):
+        filter_clauses.append("a.synthetic = 0")
+
+    if license_filter:
+        filter_clauses.append(
+            "EXISTS (SELECT 1 FROM provenance prov JOIN rights_evidence re ON re.provenance_id = prov.id "
+            "WHERE prov.asset_id = a.id AND (lower(re.license_id) LIKE ? OR lower(re.basis) LIKE ?))"
+        )
+        filter_params.extend([f"%{license_filter.lower()}%", f"%{license_filter.lower()}%"])
+
+    if min_edge:
+        filter_clauses.append(
+            "EXISTS (SELECT 1 FROM representation rep WHERE rep.asset_id = a.id AND rep.role NOT LIKE 'thumb%' "
+            "AND min(coalesce(rep.width, 0), coalesce(rep.height, 0)) >= ?)"
+        )
+        filter_params.append(min_edge)
+
+    if exclude_used_in:
+        clean_proj = exclude_used_in.strip("/")
+        filter_clauses.append(
+            "NOT EXISTS (SELECT 1 FROM usage u JOIN project p ON p.id = u.project_id "
+            "WHERE u.asset_id = a.id AND u.removed_at IS NULL AND (p.path = ? OR p.path = ? OR p.name = ?))"
+        )
+        filter_params.extend([clean_proj, f"project/{clean_proj}", clean_proj])
+
+    if matched_entity_assets is not None:
+        if not matched_entity_assets:
+            filter_clauses.append("0 = 1")
+        else:
+            placeholders = ",".join("?" for _ in matched_entity_assets)
+            filter_clauses.append(f"a.id IN ({placeholders})")
+            filter_params.extend(list(matched_entity_assets))
+
+    common_where = " AND ".join(filter_clauses)
+
     # 4. Search channels: FTS latin, FTS CJK, CJK LIKE fallback, Vector KNN
     # We collect candidate ranks: {asset_id: {"fts": rank, "cjk": rank, "vec": rank}}
     channel_ranks: dict[str, dict[str, int]] = {}
@@ -75,14 +197,16 @@ def execute_search(
     limit_recall = max(50, (offset + k) * 3)
 
     # Channel A: fts_latin
-    if fts_latin_query:
+    if mode != "vector" and fts_latin_query:
         try:
-            cur = conn.execute(
+            sql = (
                 "SELECT a.id AS asset_id, row_number() OVER (ORDER BY bm25(fts_latin)) AS r "
-                "FROM fts_latin JOIN asset a ON a.rid = fts_latin.rowid "
-                "WHERE fts_latin MATCH ? LIMIT ?",
-                (fts_latin_query, limit_recall),
+                "FROM fts_latin "
+                "JOIN asset a ON a.rid = fts_latin.rowid "
+                "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
+                f"WHERE fts_latin MATCH ? AND {common_where} LIMIT ?"
             )
+            cur = conn.execute(sql, [fts_latin_query] + filter_params + [limit_recall])
             for r in cur:
                 aid = r["asset_id"]
                 channel_ranks.setdefault(aid, {})["fts"] = r["r"]
@@ -90,27 +214,31 @@ def execute_search(
             pass
 
     # Fallback LIKE for latin terms if FTS missed
-    if latin_terms:
+    if mode != "vector" and latin_terms:
         for term in latin_terms:
-            cur = conn.execute(
-                "SELECT a.id AS asset_id FROM search_doc s JOIN asset a ON a.rid = s.rid "
-                "WHERE s.title LIKE ? OR s.description LIKE ? OR s.artist LIKE ? OR s.tags LIKE ? LIMIT ?",
-                (f"%{term}%", f"%{term}%", f"%{term}%", f"%{term}%", limit_recall),
+            sql = (
+                "SELECT a.id AS asset_id FROM search_doc s "
+                "JOIN asset a ON a.rid = s.rid "
+                "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
+                f"WHERE (s.title LIKE ? OR s.description LIKE ? OR s.artist LIKE ? OR s.tags LIKE ?) AND {common_where} LIMIT ?"
             )
+            cur = conn.execute(sql, [f"%{term}%", f"%{term}%", f"%{term}%", f"%{term}%"] + filter_params + [limit_recall])
             for i, r in enumerate(cur, start=1):
                 aid = r["asset_id"]
                 if "fts" not in channel_ranks.setdefault(aid, {}):
                     channel_ranks[aid]["fts"] = i
 
     # Channel B: fts_cjk (trigram)
-    if cjk_q.match:
+    if mode != "vector" and cjk_q.match:
         try:
-            cur = conn.execute(
+            sql = (
                 "SELECT a.id AS asset_id, row_number() OVER (ORDER BY bm25(fts_cjk)) AS r "
-                "FROM fts_cjk JOIN asset a ON a.rid = fts_cjk.rowid "
-                "WHERE fts_cjk MATCH ? LIMIT ?",
-                (cjk_q.match, limit_recall),
+                "FROM fts_cjk "
+                "JOIN asset a ON a.rid = fts_cjk.rowid "
+                "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
+                f"WHERE fts_cjk MATCH ? AND {common_where} LIMIT ?"
             )
+            cur = conn.execute(sql, [cjk_q.match] + filter_params + [limit_recall])
             for r in cur:
                 aid = r["asset_id"]
                 channel_ranks.setdefault(aid, {})["cjk"] = r["r"]
@@ -118,29 +246,56 @@ def execute_search(
             pass
 
     # Channel C: CJK LIKE fallback for short 1-2 char queries
-    if cjk_q.like:
+    if mode != "vector" and cjk_q.like:
         like_terms = cjk_q.like
         clause = " AND ".join("s.cjk LIKE ?" for _ in like_terms)
         params = [f"%{term}%" for term in like_terms]
-        cur = conn.execute(
-            f"SELECT a.id AS asset_id FROM search_doc s JOIN asset a ON a.rid = s.rid WHERE {clause} LIMIT ?",
-            params + [limit_recall],
+        sql = (
+            "SELECT a.id AS asset_id FROM search_doc s "
+            "JOIN asset a ON a.rid = s.rid "
+            "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
+            f"WHERE {clause} AND {common_where} LIMIT ?"
         )
+        cur = conn.execute(sql, params + filter_params + [limit_recall])
         for i, r in enumerate(cur, start=1):
             aid = r["asset_id"]
             if "cjk" not in channel_ranks.setdefault(aid, {}):
                 channel_ranks[aid]["cjk"] = i
 
-    # Channel D: Vector KNN if qvec is provided and vec_s1 exists
+    # Channel D: Vector KNN if qvec is provided and active vec table exists
     if qvec:
+        active_vec_table = "vec_s1"
+        space_row = conn.execute("SELECT vec_table FROM embedding_space WHERE active = 1").fetchone()
+        if space_row:
+            active_vec_table = space_row["vec_table"]
+
+        vec_where_clauses = ["embedding MATCH ?", "k = ?", "stale = 0"]
+        vec_where_params: list[Any] = [qvec, limit_recall]
+
+        if not include_quotation:
+            vec_where_clauses.append("rights = 'allow'")
+        if kind:
+            placeholders = ",".join("?" for _ in kind)
+            vec_where_clauses.append(f"kind IN ({placeholders})")
+            vec_where_params.extend(kind)
+        if anchor and anchor.lower() in ("person", "event", "data"):
+            vec_where_clauses.append("synthetic = 0")
+        if min_edge:
+            vec_where_clauses.append("min_edge >= ?")
+            vec_where_params.append(min_edge)
+
+        vec_where_sql = " AND ".join(vec_where_clauses)
         try:
-            cur = conn.execute(
+            sql = (
                 "SELECT t.asset_id, min(v.r) AS r FROM ("
-                "  SELECT rid, row_number() OVER (ORDER BY distance) AS r FROM vec_s1 "
-                "  WHERE embedding MATCH ? AND k = ? AND stale = 0"
-                ") v JOIN vec_target t ON t.rid = v.rid GROUP BY t.asset_id",
-                (qvec, limit_recall),
+                f"  SELECT rid, row_number() OVER (ORDER BY distance) AS r FROM {active_vec_table} "
+                f"  WHERE {vec_where_sql}"
+                ") v JOIN vec_target t ON t.rid = v.rid "
+                "JOIN asset a ON a.id = t.asset_id "
+                "LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
+                f"WHERE {common_where} GROUP BY t.asset_id"
             )
+            cur = conn.execute(sql, vec_where_params + filter_params)
             for r in cur:
                 aid = r["asset_id"]
                 channel_ranks.setdefault(aid, {})["vec"] = r["r"]
@@ -161,10 +316,10 @@ def execute_search(
     seen_assets = set()
 
     for aid, score, ranks in rrf_scores:
-        if matched_entity_assets is not None and aid not in matched_entity_assets:
+        if aid in seen_assets:
             continue
+        seen_assets.add(aid)
 
-        # Asset metadata & rights
         asset_row = conn.execute(
             "SELECT a.*, ar.decision, ar.basis, ar.obligations "
             "FROM asset a LEFT JOIN asset_rights ar ON ar.asset_id = a.id "
@@ -175,29 +330,12 @@ def execute_search(
         if not asset_row:
             continue
 
-        # Rights filter
         decision = asset_row["decision"] or "deny"
         basis = asset_row["basis"]
-        if decision != "allow":
-            continue
-        if basis == "quotation" and not include_quotation:
+        if decision != "allow" and not (include_quotation and decision == "review" and basis == "quotation"):
             continue
 
-        # Kind filter
-        if kind and asset_row["kind"] not in kind:
-            continue
-
-        # Exclude used in project filter
-        if exclude_used_in:
-            used = conn.execute(
-                "SELECT 1 FROM usage u JOIN project p ON p.id = u.project_id "
-                "WHERE u.asset_id = ? AND (p.id = ? OR p.path LIKE ?) AND u.removed_at IS NULL LIMIT 1",
-                (aid, exclude_used_in, f"%{exclude_used_in}%"),
-            ).fetchone()
-            if used:
-                continue
-
-        # Representations and min_edge check
+        # Choose appropriate representation
         reps = conn.execute(
             "SELECT * FROM representation WHERE asset_id = ? ORDER BY role = 'original' DESC",
             (aid,),
@@ -207,16 +345,19 @@ def execute_search(
 
         chosen_rep = None
         for rep in reps:
+            if rep["role"].startswith("thumb"):
+                continue
             w = rep["width"] or 0
             h = rep["height"] or 0
-            edge = min(w, h)
-            if min_edge and edge < min_edge and rep["role"] == "original":
+            if min_edge and min(w, h) < min_edge:
                 continue
             chosen_rep = rep
             break
 
         if not chosen_rep:
-            continue
+            if min_edge:
+                continue
+            chosen_rep = reps[0]
 
         # Fetch provenance info
         prov = conn.execute(
@@ -244,27 +385,57 @@ def execute_search(
             (aid,),
         ).fetchall()]
 
-        surviving_items.append({
-            "asset_id": aid,
-            "representation_id": chosen_rep["id"],
-            "segment_id": None,
-            "slug": asset_row["slug"],
-            "title": asset_row["title"],
-            "kind": asset_row["kind"],
-            "width": chosen_rep["width"],
-            "height": chosen_rep["height"],
-            "duration": chosen_rep["duration"],
-            "blob_sha256": chosen_rep["blob_sha256"],
-            "basis": basis,
-            "license_id": ev["license_id"] if ev else None,
-            "attribution": ev["attribution"] if ev else None,
-            "source": prov["source"] if prov else "local",
-            "source_url": prov["source_url"] if prov else None,
-            "score": round(score, 5),
-            "ranks": ranks,
-            "flags": flags,
-            "used_in": used_projs,
-        })
+        # Check segments
+        segments = conn.execute(
+            "SELECT * FROM segment WHERE representation_id = ? ORDER BY t0",
+            (chosen_rep["id"],),
+        ).fetchall()
+
+        if segments:
+            for seg in segments[:2]:
+                surviving_items.append({
+                    "asset_id": aid,
+                    "representation_id": chosen_rep["id"],
+                    "segment_id": seg["id"],
+                    "slug": asset_row["slug"],
+                    "title": asset_row["title"],
+                    "kind": asset_row["kind"],
+                    "width": chosen_rep["width"],
+                    "height": chosen_rep["height"],
+                    "duration": (seg["t1"] - seg["t0"]) if (seg["t1"] is not None and seg["t0"] is not None) else chosen_rep["duration"],
+                    "blob_sha256": chosen_rep["blob_sha256"],
+                    "basis": basis,
+                    "decision": decision,
+                    "obligations": json.loads(asset_row["obligations"] or "[]"),
+                    "license_id": ev["license_id"] if ev else None,
+                    "attribution": ev["attribution"] if ev else None,
+                    "score": score,
+                    "ranks": ranks,
+                    "flags": flags,
+                    "used_in": used_projs,
+                })
+        else:
+            surviving_items.append({
+                "asset_id": aid,
+                "representation_id": chosen_rep["id"],
+                "segment_id": None,
+                "slug": asset_row["slug"],
+                "title": asset_row["title"],
+                "kind": asset_row["kind"],
+                "width": chosen_rep["width"],
+                "height": chosen_rep["height"],
+                "duration": chosen_rep["duration"],
+                "blob_sha256": chosen_rep["blob_sha256"],
+                "basis": basis,
+                "decision": decision,
+                "obligations": json.loads(asset_row["obligations"] or "[]"),
+                "license_id": ev["license_id"] if ev else None,
+                "attribution": ev["attribution"] if ev else None,
+                "score": score,
+                "ranks": ranks,
+                "flags": flags,
+                "used_in": used_projs,
+            })
 
     # Paginate
     paged_items = surviving_items[offset : offset + k]

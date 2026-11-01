@@ -1,7 +1,7 @@
 [plugin]
 name = "scenecut"
 version = "0.0.1"
-sdk = ">=0.1,<2"
+sdk = ">=1.0,<2"
 types = ["segmenter"]
 status = "ready"
 summary = "FFmpeg scene cut detection (threshold 0.3, min 2s, max 10s)."

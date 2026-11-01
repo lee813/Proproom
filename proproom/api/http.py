@@ -11,6 +11,8 @@ import datetime
 import hashlib
 import hmac
 import os
+import logging
+import threading
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -35,10 +37,29 @@ def _startup() -> None:
     _state["booted"] = booted
     _state["token"] = bootstrap.read_token(booted.home)
     _state["writer"] = Writer(booted.home.db)
+    stop = threading.Event()
+    _state["worker_stop"] = stop
+    def run_worker() -> None:
+        from ..core.worker import tick
+        ctx = OpContext(booted, actor="worker")
+        while not stop.is_set():
+            try:
+                if not tick(ctx):
+                    stop.wait(1.0)
+            except Exception:
+                logging.getLogger("proproom.worker").exception("Worker tick failed")
+                stop.wait(1.0)
+    thread = threading.Thread(target=run_worker, name="proproom-worker", daemon=True)
+    _state["worker_thread"] = thread
+    thread.start()
 
 
 @app.on_event("shutdown")
 def _shutdown() -> None:
+    if stop := _state.get("worker_stop"):
+        stop.set()
+    if thread := _state.get("worker_thread"):
+        thread.join(timeout=10)
     if w := _state.get("writer"):
         w.close()
 
@@ -180,13 +201,21 @@ async def share_media(token: str, rep_id: str, request: Request) -> Response:
         file_size = row["bytes"]
         mime = row["mime"] or "application/octet-stream"
 
-        # Support Range header for video / audio seeking
+        # Support Range header for video / audio seeking and partial requests
         range_header = request.headers.get("Range")
         if range_header and range_header.startswith("bytes="):
-            byte_range = range_header.replace("bytes=", "").split("-")
-            start = int(byte_range[0])
-            end = int(byte_range[1]) if byte_range[1] else file_size - 1
-            length = (end - start) + 1
+            raw_range = range_header.replace("bytes=", "").strip()
+            if raw_range.startswith("-"):
+                suffix_len = int(raw_range[1:])
+                start = max(0, file_size - suffix_len)
+                end = file_size - 1
+            else:
+                byte_range = raw_range.split("-")
+                start = int(byte_range[0])
+                end = int(byte_range[1]) if byte_range[1] else file_size - 1
+            start = max(0, start)
+            end = min(file_size - 1, end)
+            length = max(0, (end - start) + 1)
 
             def iter_file():
                 with open(file_path, "rb") as f:
@@ -217,13 +246,22 @@ async def share_media(token: str, rep_id: str, request: Request) -> Response:
 async def share_feedback_submit(token: str, request: Request) -> dict[str, Any]:
     share = _get_share(token)
     body = await request.json()
-    pos = int(body["pos"])
+    pos = int(body.get("pos", 0))
     verdict = body.get("verdict", "want")
     comment = body.get("comment", "")
+
+    if verdict not in ("want", "reject", "uncertain", "star"):
+        raise HTTPException(400, detail=f"Invalid verdict '{verdict}'")
 
     b = _state["booted"]
     conn = db.connect(b.home.db)
     try:
+        pos_exists = conn.execute(
+            "SELECT 1 FROM share_item WHERE share_id = ? AND pos = ?", (share["id"], pos)
+        ).fetchone()
+        if not pos_exists:
+            raise HTTPException(404, detail=f"Item at pos {pos} not found in this share")
+
         now = utcnow()
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(

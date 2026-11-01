@@ -44,3 +44,12 @@ idle_unload_s = 600
 
 [share]
 default_expires = "30d"
+
+[capture]
+# Allow only websites you intend to capture, including any required resource hosts.
+allowed_domains = []
+# Optional CDP service; an empty value uses a separately installed local Chromium.
+cdp_url = ""
+viewport_width = 1200
+viewport_height = 900
+device_scale_factor = 2

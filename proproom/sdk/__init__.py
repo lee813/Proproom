@@ -1,5 +1,6 @@
-"""The only surface plugins may import (semver). Frozen as 1.0 after two real sources pass contract tests."""
-SDK_VERSION = "0.1.0"
+"""The only surface plugins may import (semver). Frozen at 1.0 (2026-10-31): commons, archive_org and capture pass
+the source contract tests. Breaking changes need 2.0."""
+SDK_VERSION = "1.0.0"
 
 from .errors import ProproomError  # noqa: E402
 from .protocols import Analyzer, Embedder, Exporter, Hook, Policy, Ranker, Segmenter, Source  # noqa: E402

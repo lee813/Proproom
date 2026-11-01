@@ -114,6 +114,7 @@ class FlagResult:
 
 @dataclass
 class AnalysisResult:
+    measurements: dict[str, float | None] = field(default_factory=dict)
     flags: list[FlagResult] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     regions: list[dict[str, Any]] = field(default_factory=list)  # {kind, x, y, w, h, t?, score?}

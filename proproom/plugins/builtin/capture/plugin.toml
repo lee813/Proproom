@@ -1,7 +1,12 @@
 [plugin]
 name = "capture"
 version = "0.0.1"
-sdk = ">=0.1,<2"
+sdk = ">=1.0,<2"
 types = ["source"]
 status = "ready"
 summary = "Webpage screenshot capture for quotation and evidence."
+
+[source]
+capabilities = ["search", "resolve", "transfer"]
+bulk_allowed = false
+configurable_domains = true

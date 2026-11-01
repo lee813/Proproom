@@ -12,7 +12,7 @@ from typing import Any, Tuple
 
 from ..sdk.errors import ProproomError
 from .ids import ulid, utcnow
-from .journal import append_journal, journal_path
+from .journal import acquire_delivery_lock, append_journal, journal_path, read_journal, rollback_delivery
 from .paths import Home
 
 
@@ -89,6 +89,13 @@ def claim_operation(
         res = json.loads(row["result"]) if row["result"] else {}
         return row["id"], False, res
 
+    if row["state"] == "running":
+        raise ProproomError(
+            code="operation_running",
+            message=f"Operation '{row['id']}' with key '{idempotency_key}' is currently running",
+            retryable=True,
+        )
+
     if row["state"] == "failed":
         err = json.loads(row["error"]) if row["error"] else {}
         raise ProproomError(
@@ -98,7 +105,7 @@ def claim_operation(
             retryable=False,
         )
 
-    # In planned or running state
+    # In planned state
     return row["id"], False, None
 
 
@@ -133,18 +140,40 @@ def fail_operation(
 
 
 def recover_operations(conn: sqlite3.Connection, home: Home) -> list[str]:
-    """Check for unfinished operations at startup and mark them failed or recovered."""
+    """Roll back journaled delivery writes, or report a conflict without modifying data."""
     rows = conn.execute("SELECT id, kind, state FROM operation WHERE state IN ('planned', 'running')").fetchall()
     recovered = []
-    now = utcnow()
-    for r in rows:
-        op_id = r["id"]
-        append_journal(home, op_id, "recovered_on_boot", {"previous_state": r["state"]})
-        # If it was planned, leave as planned so agent can execute by plan id; if running, mark failed
-        if r["state"] == "running":
-            conn.execute(
-                "UPDATE operation SET state = 'failed', error = ?, finished = ? WHERE id = ?",
-                (json.dumps({"code": "interrupted", "message": "Server restarted while operation was running"}), now, op_id),
-            )
+    for row in rows:
+        op_id = row["id"]
+        lock = acquire_delivery_lock(home, op_id) if row["kind"] == "link" else None
+        if row["kind"] == "link" and lock is None:
+            continue  # Another process is still performing this delivery.
+        try:
+            entries = read_journal(home, op_id)
+            has_writes = any(e["step"] in ("write_intent", "delivered_file") for e in entries)
+            if row["state"] == "planned" and not (row["kind"] == "link" and has_writes):
+                continue
+            append_journal(home, op_id, "recovered_on_boot", {"previous_state": row["state"]})
+            error = {"code": "interrupted", "message": "Server restarted while operation was running"}
+            if row["kind"] == "link" and has_writes:
+                try:
+                    rollback_delivery(home, op_id)
+                except ProproomError as exc:
+                    if exc.code not in ("recovery_conflict", "recovery_ambiguous"):
+                        raise
+                    error = exc.to_dict()
+                    error["details"]["journal_path"] = str(journal_path(home, op_id))
+                    append_journal(home, op_id, "recovery_unresolved", error)
+            conn.execute("UPDATE operation SET state = 'failed', error = ?, finished = ? WHERE id = ?",
+                         (json.dumps(error, ensure_ascii=False), utcnow(), op_id))
             recovered.append(op_id)
+        finally:
+            if lock is not None:
+                lock.close()
     return recovered
+
+
+def unresolved_recoveries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return failed operations requiring manual delivery recovery."""
+    rows = conn.execute("SELECT id, kind, error FROM operation WHERE state = 'failed' AND json_extract(error, '$.code') IN ('recovery_conflict', 'recovery_ambiguous') ORDER BY created, id").fetchall()
+    return [{"operation_id": row["id"], "kind": row["kind"], "error": json.loads(row["error"])} for row in rows]

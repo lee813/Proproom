@@ -66,6 +66,8 @@ class ArchiveOrgSource:
         desc = meta.get("description", "")
         lic_url = meta.get("licenseurl")
 
+        media_type = meta.get("mediatype", "")
+
         offers: list[RepresentationOffer] = []
         server = data.get("server")
         dir_path = data.get("dir")
@@ -86,13 +88,26 @@ class ArchiveOrgSource:
                         url=f_url,
                         width=int(f.get("width")) if f.get("width") else None,
                         height=int(f.get("height")) if f.get("height") else None,
-                        size_bytes=int(f.get("size")) if f.get("size") else None,
+                        bytes=int(f.get("size")) if f.get("size") else None,
                     ))
+
+        if "video" in media_type or "movie" in media_type or "film" in media_type:
+            kind = "footage"
+        elif "audio" in media_type:
+            kind = "music"
+        elif "image" in media_type:
+            kind = "photo"
+        else:
+            kind = "footage" if any("video" in o.mime for o in offers) else "photo"
+
+        basis = "license" if lic_url else "unknown"
 
         return ResolvedSource(
             ref=ref,
+            title=title,
+            kind=kind,
             metadata={"title": title, "description": desc, "raw": meta},
-            rights=[RightsEvidence(basis="license" if lic_url else "public_domain", license_url=lic_url, origin="source")],
+            evidence=[RightsEvidence(basis=basis, license_url=lic_url, origin="source")],
             offers=offers,
         )
 

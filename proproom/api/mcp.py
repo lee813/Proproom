@@ -73,6 +73,7 @@ def run_mcp_server(include_admin: bool = False) -> None:
                         "name": op.name,
                         "description": op.summary,
                         "inputSchema": op.schema()["input"],
+                        "outputSchema": op.schema()["output"],
                     })
             _send_response({
                 "jsonrpc": "2.0",
@@ -98,15 +99,22 @@ def run_mcp_server(include_admin: bool = False) -> None:
                     "id": msg_id,
                     "result": {
                         "content": [{"type": "text", "text": text_content}],
+                        "structuredContent": result,
                         "isError": False,
                     },
                 })
             except Exception as e:
+                from ..sdk.errors import ProproomError
+                if isinstance(e, ProproomError):
+                    err_dict = e.to_dict()
+                else:
+                    err_dict = {"code": "internal_error", "message": str(e), "retryable": False}
                 _send_response({
                     "jsonrpc": "2.0",
                     "id": msg_id,
                     "result": {
                         "content": [{"type": "text", "text": f"Error: {e}"}],
+                        "structuredContent": {"error": err_dict},
                         "isError": True,
                     },
                 })

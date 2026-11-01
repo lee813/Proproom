@@ -5,10 +5,13 @@ Handover §11.
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import hashlib
 import importlib.util
 import json
 import logging
+import re
 import sqlite3
 import sys
 import tomllib
@@ -25,6 +28,9 @@ from ..sdk.context import (
     PolicyContext,
     SourceContext,
 )
+from ..sdk import SDK_VERSION
+from ..sdk.errors import ProproomError
+from . import db
 from .http import RateLimitedClient, build_user_agent
 from .ids import utcnow
 from .paths import Home
@@ -57,11 +63,29 @@ def hash_path(path: Path) -> str:
     return h.hexdigest()
 
 
+def sdk_compatible(spec: str | None) -> bool:
+    """True when SDK_VERSION satisfies a manifest's `sdk` range, e.g. ">=1.0,<2". No range means any version."""
+    if not spec:
+        return True
+    have = tuple(int(x) for x in SDK_VERSION.split("."))
+    for part in spec.split(","):
+        m = re.fullmatch(r"\s*(>=|<=|==|>|<)\s*(\d+(?:\.\d+){0,2})\s*", part)
+        if not m:
+            raise ProproomError("bad_manifest", f"Unreadable sdk range {spec!r}")
+        want = tuple(int(x) for x in m.group(2).split("."))
+        want += (0,) * (3 - len(want))
+        if not {">=": have >= want, "<=": have <= want, "==": have == want, ">": have > want,
+                "<": have < want}[m.group(1)]:
+            return False
+    return True
+
+
 class PluginManager:
     def __init__(self, home: Home, instance_id: str = ""):
         self.home = home
         self.instance_id = instance_id
         self.plugins: dict[str, LoadedPlugin] = {}
+        self.rejected: dict[str, str] = {}  # name -> why it was not loaded (e.g. an incompatible sdk range)
 
     def load_all(self, conn: sqlite3.Connection | None = None) -> None:
         """Scan and load builtin and directory plugins."""
@@ -93,6 +117,9 @@ class PluginManager:
                 name = p_sec.get("name", d.name)
                 version = p_sec.get("version", "0.0.1")
                 types = p_sec.get("types", [])
+                if not sdk_compatible(p_sec.get("sdk")):
+                    self.rejected[name] = f"needs sdk {p_sec.get('sdk')}, core has {SDK_VERSION}"
+                    continue
 
                 # Load module
                 mod_name = f"proproom.plugins.builtin.{d.name}"
@@ -143,6 +170,10 @@ class PluginManager:
             name = p_sec.get("name", entry.stem)
             version = p_sec.get("version", "0.0.1")
             types = p_sec.get("types", [])
+            if not sdk_compatible(p_sec.get("sdk")):
+                self.rejected[name] = f"needs sdk {p_sec.get('sdk')}, core has {SDK_VERSION}"
+                logger.warning("Plugin %s not loaded: %s", name, self.rejected[name])
+                continue
 
             p_hash = hash_path(entry)
 
@@ -167,6 +198,20 @@ class PluginManager:
                         instance=instance,
                         path=entry,
                     )
+
+                    if self.home.db.is_file():
+                        try:
+                            c = sqlite3.connect(self.home.db)
+                            c.execute(
+                                "INSERT INTO plugin_registry(name, version, hash, types, origin, enabled, loaded_at) "
+                                "VALUES (?, ?, ?, ?, ?, 1, ?) "
+                                "ON CONFLICT(name, version, hash) DO UPDATE SET types=excluded.types, loaded_at=excluded.loaded_at",
+                                (name, version, p_hash, json.dumps(types), "dir", utcnow()),
+                            )
+                            c.commit()
+                            c.close()
+                        except Exception as e:
+                            logger.debug("Failed to record plugin in plugin_registry: %s", e)
                 except Exception as e:
                     logger.warning("Failed to exec plugin %s: %s", name, e)
 
@@ -179,15 +224,23 @@ class PluginManager:
                 if isinstance(lst, list):
                     allowed_domains.extend(lst)
 
-        contact = self.home.boot.get("http", {}).get("contact", "")
+        from . import config
+        cfg = config.load(self.home)
+        contact = cfg.get("http", {}).get("contact") or self.home.boot.get("http", {}).get("contact", "")
+        rate = float(cfg.get("http", {}).get("rate_per_source") or self.home.boot.get("http", {}).get("rate_per_source", 1.0))
         ua = build_user_agent(self.instance_id, contact)
-        rate = float(self.home.boot.get("http", {}).get("rate_per_source", 1.0))
-        http = RateLimitedClient(ua, rate_per_sec=rate, allowed_domains=allowed_domains)
+        source_config = cfg.get(plugin_name, {})
+        if p and p.manifest.get("source", {}).get("configurable_domains"):
+            configured = source_config.get("allowed_domains", [])
+            if not isinstance(configured, list) or any(not isinstance(d, str) or not d for d in configured):
+                raise ProproomError("bad_config", f"Invalid domain list for {plugin_name}")
+            allowed_domains.extend(configured)
+        http = RateLimitedClient(ua, rate_per_sec=rate, allowed_domains=allowed_domains, rate_key=plugin_name)
 
         return SourceContext(
             plugin=plugin_name,
             log=logging.getLogger(f"proproom.plugin.{plugin_name}"),
-            config=p.manifest if p else {},
+            config={**(p.manifest if p else {}), **source_config},
             http=http,
             keys={},
         )
@@ -210,3 +263,75 @@ class PluginManager:
             config=p.manifest if p else {},
             policy_version=policy_version,
         )
+
+
+def run_sync(coro: Any) -> Any:
+    """Single canonical sync wrapper for async plugin calls (AGENTS.md)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+def plugin_list(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    pm = getattr(ctx, "plugin_manager", None) or (ctx.pm() if hasattr(ctx, "pm") else None)
+    plugins = []
+    if pm:
+        for p in pm.plugins.values():
+            plugins.append({
+                "name": p.name,
+                "version": p.version,
+                "hash": p.hash,
+                "types": p.types,
+                "origin": p.origin,
+                "status": p.manifest.get("plugin", {}).get("status") or p.manifest.get("status", "ready"),
+            })
+    return {"plugins": plugins}
+
+
+def plugin_reload(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    b = ctx.booted
+    pm = getattr(ctx, "plugin_manager", None) or (ctx.pm() if hasattr(ctx, "pm") else None)
+    conn = db.connect(b.home.db)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if pm:
+            pm.load_all(conn)
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+    return {"reloaded": True, "plugins": [p.name for p in pm.plugins.values()] if pm else []}
+
+
+def plugin_new(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    name = args["name"]
+    types = args["types"]
+    p_dir = ctx.booted.home.dir("plugins") / name
+    p_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_content = f"""[plugin]
+name = "{name}"
+version = "0.0.1"
+sdk = ">=1.0,<2"
+types = {json.dumps(types)}
+status = "stub"
+"""
+    (p_dir / "plugin.toml").write_text(manifest_content, encoding="utf-8")
+    (p_dir / "__init__.py").write_text(f'"""Plugin {name}."""\n\nclass Plugin:\n    pass\n', encoding="utf-8")
+    return {"created": str(p_dir)}
+
+
+def plugin_test(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    name = args["name"]
+    pm = getattr(ctx, "plugin_manager", None) or (ctx.pm() if hasattr(ctx, "pm") else None)
+    p = pm.plugins.get(name) if pm else None
+    if not p:
+        raise ProproomError("plugin_not_found", f"Plugin {name} not found")
+    raise ProproomError("not_implemented", "The plugin contract runner is not implemented")
+
+

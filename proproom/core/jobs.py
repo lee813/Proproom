@@ -15,10 +15,13 @@ from .ids import ulid, utcnow
 from .paths import Home
 
 
-def should_pause(home: Home, config: dict[str, Any], cores: int = 2) -> tuple[bool, str | None]:
+def should_pause(home: Home, config: dict[str, Any], cores: int | None = None) -> tuple[bool, str | None]:
     """Check if background job should pause due to system load or lockfile."""
     pause_cfg = config.get("pause", {})
     load_per_core = float(pause_cfg.get("load_per_core", 0.8))
+
+    if cores is None:
+        cores = os.cpu_count() or 1
 
     # 1. System load
     loadavg_path = Path("/proc/loadavg")
@@ -27,7 +30,7 @@ def should_pause(home: Home, config: dict[str, Any], cores: int = 2) -> tuple[bo
             parts = loadavg_path.read_text().split()
             load_1m = float(parts[0])
             if (load_1m / max(cores, 1)) > load_per_core:
-                return True, f"load ({load_1m:.1f}/{cores} cores)"
+                return True, "load"
         except Exception:
             pass
 
@@ -36,7 +39,7 @@ def should_pause(home: Home, config: dict[str, Any], cores: int = 2) -> tuple[bo
     for lf in lockfiles:
         p = home.nas / lf
         if p.exists():
-            return True, f"lockfile ({lf})"
+            return True, "lockfile"
 
     return False, None
 
@@ -47,13 +50,15 @@ def create_job(
     params: dict[str, Any],
     budget_bytes: int | None = None,
     operation_id: str | None = None,
+    state: str = "queued",
 ) -> str:
     job_id = ulid()
     now = utcnow()
+    started = now if state == "running" else None
     conn.execute(
         "INSERT INTO job(id, kind, operation_id, state, params, progress, budget_bytes, created, started, heartbeat) "
-        "VALUES (?, ?, ?, 'running', ?, '{}', ?, ?, ?, ?)",
-        (job_id, kind, operation_id, json.dumps(params, ensure_ascii=False), budget_bytes, now, now, now),
+        "VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)",
+        (job_id, kind, operation_id, state, json.dumps(params, ensure_ascii=False), budget_bytes, now, started, now),
     )
     return job_id
 
@@ -121,3 +126,49 @@ def cancel_job(conn: sqlite3.Connection, job_id: str) -> None:
         "UPDATE job SET state = 'cancelled', finished = ?, heartbeat = ? WHERE id = ?",
         (now, now, job_id),
     )
+
+
+def execute_job_op(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Operation handler: get / cancel / pause / resume a job."""
+    b = ctx.booted
+    action = args["action"]
+    job_id = args["job_id"]
+    from . import db
+    from ..sdk.errors import ProproomError
+
+    conn = db.connect(b.home.db)
+    try:
+        j = get_job(conn, job_id)
+        if not j:
+            raise ProproomError("job_not_found", f"Job {job_id} not found")
+        if action == "get":
+            return j
+        elif action == "cancel":
+            conn.execute("BEGIN IMMEDIATE")
+            cancel_job(conn, job_id)
+            conn.execute("COMMIT")
+            return {"job_id": job_id, "state": "cancelled"}
+        elif action == "pause":
+            conn.execute("BEGIN IMMEDIATE")
+            pause_job(conn, job_id)
+            conn.execute("COMMIT")
+            return {"job_id": job_id, "state": "paused"}
+        elif action == "resume":
+            conn.execute("BEGIN IMMEDIATE")
+            resume_job(conn, job_id)
+            conn.execute("COMMIT")
+            return {"job_id": job_id, "state": "running"}
+        raise ProproomError("bad_action", f"Unknown job action {action}")
+    finally:
+        conn.close()
+
+
+
+def recover_stale_jobs(conn: sqlite3.Connection, stale_before: str) -> None:
+    """Recover only jobs whose last heartbeat predates the stale threshold."""
+    rows = conn.execute("SELECT id, kind, cursor FROM job WHERE state = 'running' AND (heartbeat IS NULL OR heartbeat < ?)", (stale_before,)).fetchall()
+    for row in rows:
+        if row["kind"] in ("pull", "index"):
+            conn.execute("UPDATE job SET state = 'queued', heartbeat = ? WHERE id = ? AND state = 'running'", (utcnow(), row["id"]))
+        else:
+            finish_job(conn, row["id"], "failed", {"code": "interrupted", "message": "Job was interrupted and cannot resume"})

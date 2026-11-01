@@ -4,9 +4,7 @@ A NAS-native media library: **one container, one folder.** Open-licensed images,
 with their provenance and rights evidence, searched with hybrid multimodal-vector + keyword recall, and
 delivered to projects with a dry-run plan and safe retries.
 
-> Status: **skeleton** (stage 1 of the build order in [docs/HANDOVER.md](docs/HANDOVER.md) §15).
-> The schema, boot sequence, operation registry, `prop capabilities` and the HTTP shell work;
-> everything else is declared with its contract and returns `not_implemented`.
+> The MVP is in progress; `prop capabilities` and `prop plugin list` report the current operation and plugin state.
 
 ## Run
 
@@ -27,6 +25,34 @@ docker exec proproom prop capabilities
 docker exec proproom prop db status
 curl -H "Authorization: Bearer $(cat /path/on/nas/proproom/instance.token)" http://nas:8765/v1/capabilities
 ```
+
+## Capture a source page
+
+Capture requires a configured allowlist of page and resource hosts in the library's `config.toml`:
+
+```toml
+[capture]
+allowed_domains = ["www.example.org", "static.example.org"]
+# Optional: connect to an existing Chromium service over CDP.
+cdp_url = "http://browser-service:9222"
+```
+
+The standard image includes the Playwright client but no browser binary. Use a Chromium CDP service, or build
+an image with Chromium by passing `--build-arg INSTALL_BROWSER=1` to `docker build`. A browser service must be
+trusted and accessible from Proproom; capture creates an isolated context and does not sign in.
+
+```bash
+prop remote capture https://www.example.org/press-release
+prop fetch --source capture --external-id https://www.example.org/press-release \
+  --options '{"viewport_width":430,"viewport_height":900,"device_scale_factor":2,"scroll_text":"Results"}'
+```
+
+Optional `scroll_y`, `clip`, and `highlight` use CSS pixels; `clip` and `highlight` accept objects with `x`,
+`y`, `width`, and `height`. Highlight coordinates are relative to the viewport after scrolling and are retained
+with provenance. The source saves an MHTML
+snapshot with the screenshot, and preserves the requested and final URLs, page title, and publisher. Pages
+without an explicit recognized open licence are recorded as quotations for review. Navigation and resource
+hosts must be in the allowlist, including redirect targets; frames and WebSockets are disabled.
 
 ## Layout
 

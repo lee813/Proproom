@@ -61,7 +61,7 @@ def test_bootstrap_layout(booted):
         assert b.home.dir(d).is_dir()
     assert b.home.config.is_file() and b.home.token.is_file()
     assert (b.home.token.stat().st_mode & 0o777) == 0o600
-    assert db.user_version(conn) == db.latest_version() == 1
+    assert db.user_version(conn) == db.latest_version() >= 1
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert b.policy_version == 1

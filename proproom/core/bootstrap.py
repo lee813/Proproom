@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 from . import config as config_mod
 from . import db
+from . import ops, jobs
+from datetime import datetime, timedelta, timezone
 from .ids import ulid, utcnow
 from .paths import LIBRARY_DIRS, Home, resolve_home
 
@@ -59,6 +61,12 @@ def boot(home: Home | None = None) -> Booted:
         conn.execute("INSERT OR REPLACE INTO instance(key, value) VALUES ('schema_version', ?)",
                      (str(db.user_version(conn)),))
         policy_version = _ensure_policy(conn, config_mod.policy_rules(cfg), now)
+        ops.recover_operations(conn, home)
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        jobs.recover_stale_jobs(conn, cutoff)
+        from .plugins import PluginManager
+        instance_id = conn.execute("SELECT value FROM instance WHERE key = 'instance_id'").fetchone()[0]
+        PluginManager(home, instance_id).load_all(conn)
         conn.execute("COMMIT")
     finally:
         conn.close()

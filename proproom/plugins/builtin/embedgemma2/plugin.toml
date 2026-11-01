@@ -1,7 +1,7 @@
 [plugin]
 name = "embedgemma2"
 version = "0.0.1"
-sdk = ">=0.1,<2"
+sdk = ">=1.0,<2"
 types = ["embedder"]
 status = "ready"
 summary = "EmbeddingGemma 2 multimodal embedder (256d MRL truncation)."

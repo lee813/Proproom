@@ -1,7 +1,7 @@
 [plugin]
 name = "credits_basic"
 version = "0.0.1"
-sdk = ">=0.1,<2"
+sdk = ">=1.0,<2"
 types = ["exporter"]
 status = "ready"
 summary = "Basic credits exporter: markdown / plain text grouped by basis."

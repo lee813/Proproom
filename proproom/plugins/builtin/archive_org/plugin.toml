@@ -1,7 +1,7 @@
 [plugin]
 name = "archive_org"
 version = "0.0.1"
-sdk = ">=0.1,<2"
+sdk = ">=1.0,<2"
 types = ["source"]
 status = "ready"
 summary = "Internet Archive: historical footage (Prelinger), audio, public documents."

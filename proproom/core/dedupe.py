@@ -16,6 +16,7 @@ from typing import Any
 from . import cjk, rights, store
 from .ids import ulid, utcnow, utcnow_monotonic
 from .paths import Home
+from ..sdk.errors import ProproomError
 
 
 def register_blob(
@@ -35,6 +36,25 @@ def register_blob(
         "storage_path = coalesce(storage_path, excluded.storage_path)",
         (sha256, size_bytes, mime, 1 if stored else 0, storage_path, now),
     )
+
+
+def generate_unique_slug(conn: sqlite3.Connection, prefix: str, text: str, max_len: int = 50) -> str:
+    """Generate a clean, collision-free slug (AGENTS.md: one slug generator)."""
+    clean_text = str(text).lower().replace("file:", "").replace(" ", "-")
+    combined = f"{prefix}-{clean_text}" if prefix else clean_text
+    base = "".join(c for c in combined if c.isalnum() or c in "-_")[:max_len].strip("-_")
+    if not base:
+        base = "asset"
+    slug = base
+    counter = 1
+    cutoff = max(10, max_len - 6)
+    while conn.execute(
+        "SELECT 1 FROM asset WHERE slug = ? UNION SELECT 1 FROM asset_slug_history WHERE slug = ?",
+        (slug, slug),
+    ).fetchone():
+        slug = f"{base[:cutoff]}-{counter}"
+        counter += 1
+    return slug
 
 
 def register_asset(
@@ -129,11 +149,16 @@ def register_provenance(
 ) -> str:
     """Register provenance entry. Returns provenance_id."""
     row = conn.execute(
-        "SELECT id FROM provenance WHERE source = ? AND external_id = ? AND revision = ?",
+        "SELECT id, asset_id FROM provenance WHERE source = ? AND external_id = ? AND revision = ?",
         (source, external_id, revision),
     ).fetchone()
     if row:
-        return row["id"]
+        if row["asset_id"] == asset_id:
+            return row["id"]
+        raise ProproomError(
+            "provenance_conflict",
+            f"Provenance entry ({source}, {external_id}, {revision}) already belongs to asset {row['asset_id']}"
+        )
 
     now = utcnow()
     prov_id = ulid()
@@ -169,6 +194,7 @@ def register_rights(
     publisher: str | None = None,
     synthetic: bool = False,
     anchor: str | None = None,
+    plugin_restrictions: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     """Register rights evidence and compute rights assessment. Returns (evidence_id, assessment_id)."""
     now = utcnow()
@@ -193,14 +219,23 @@ def register_rights(
         publisher=publisher,
         synthetic=synthetic,
         anchor=anchor,
+        plugin_restrictions=plugin_restrictions,
     )
+
+    if restrictions:
+        for r in restrictions:
+            conn.execute(
+                "INSERT INTO flag(target_type, target_id, kind, severity, evidence, origin, created) "
+                "VALUES ('asset', ?, 'restriction', 'warn', ?, 'source', ?)",
+                (asset_id, json.dumps({"restriction": r}), now),
+            )
 
     ass_id = ulid()
     conn.execute(
         "INSERT INTO rights_assessment(id, asset_id, policy_version, decision, basis, reasons, evidence_ids, "
         "obligations, assessed_at, assessed_by) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (ass_id, asset_id, policy_version, decision, basis if decision == "allow" else None,
+        (ass_id, asset_id, policy_version, decision, basis,
          json.dumps(reasons), json.dumps([ev_id]), json.dumps(obligations), utcnow_monotonic(), created_by),
     )
     return ev_id, ass_id

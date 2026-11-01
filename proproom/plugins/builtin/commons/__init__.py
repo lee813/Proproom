@@ -92,8 +92,8 @@ class CommonsSource:
 
     async def enumerate(self, ctx: SourceContext, req: EnumerateRequest) -> CandidatePage:
         # Category enumeration
-        limit = min(req.limit or 20, 50)
-        category = req.params.get("category", "")
+        limit = min(getattr(req, "limit", 20) or 20, 50)
+        category = getattr(req, "category", "") or (req.params.get("category", "") if hasattr(req, "params") else "") or ""
         params: dict[str, Any] = {
             "action": "query",
             "generator": "categorymembers",
@@ -151,10 +151,15 @@ class CommonsSource:
         meta = {}
         offers: list[RepresentationOffer] = []
         rights_list: list[RightsEvidence] = []
+        tags: list[str] = []
+
+        title = page.get("title", "").replace("File:", "")
+        mime_type = "image/jpeg"
 
         if "imageinfo" in page and page["imageinfo"]:
             ii = page["imageinfo"][0]
             meta = ii.get("extmetadata", {})
+            mime_type = ii.get("mime", "image/jpeg")
 
             artist = _clean_text(meta.get("Artist", {}).get("value"))
             lic_short = _clean_text(meta.get("LicenseShortName", {}).get("value"))
@@ -163,8 +168,22 @@ class CommonsSource:
             restr = _clean_text(meta.get("Restrictions", {}).get("value"))
             restrictions = [restr] if restr else []
 
+            cats = str(meta.get("Categories", {}).get("value") or "").lower()
+            if any(k in cats for k in ("deletion requests", "copyright violations", "disputed", "copyvio")):
+                tags.append("disputed")
+                restrictions.append("disputed")
+
             basis = "public_domain" if "public domain" in lic_short.lower() or "pd" in lic_short.lower() else "license"
-            pd_reason = "pd-old" if basis == "public_domain" else None
+            lic_lower = lic_short.lower()
+            pd_reason = None
+            if "pd-usgov" in lic_lower or "pd-us-gov" in lic_lower:
+                pd_reason = "pd-us-gov"
+            elif "pd-old" in lic_lower:
+                pd_reason = "pd-old"
+            elif "pd-mark" in lic_lower:
+                pd_reason = "pd-mark"
+            elif "cc0" in lic_lower:
+                pd_reason = "cc0"
 
             rights_list.append(RightsEvidence(
                 basis=basis,
@@ -184,7 +203,7 @@ class CommonsSource:
                 url=ii.get("url"),
                 width=ii.get("width"),
                 height=ii.get("height"),
-                size_bytes=ii.get("size"),
+                bytes=ii.get("size"),
             ))
 
             # 2000px thumb offer if different
@@ -197,7 +216,7 @@ class CommonsSource:
                     height=ii.get("thumbheight"),
                 ))
 
-        # Check video derivatives
+        # Check video derivatives (prioritise <= 1080p derivative over original)
         if "videoinfo" in page and page["videoinfo"]:
             vi = page["videoinfo"][0]
             derivatives = vi.get("derivatives", [])
@@ -219,24 +238,35 @@ class CommonsSource:
                 if not chosen:
                     chosen = vp9_offers[-1][1]  # smallest
 
-                offers.append(RepresentationOffer(
+                offers.insert(0, RepresentationOffer(
                     role="vp9_1080",
                     mime=chosen.get("type", "video/webm"),
                     url=chosen.get("src"),
                     width=chosen.get("width"),
                     height=chosen.get("height"),
-                    size_bytes=chosen.get("size"),
+                    bytes=chosen.get("size"),
                 ))
 
-        title = page.get("title", "").replace("File:", "")
+        if "video" in mime_type or "webm" in mime_type or "videoinfo" in page:
+            kind = "footage"
+        elif "audio" in mime_type or "ogg" in mime_type:
+            kind = "music"
+        else:
+            kind = "photo"
+
         desc = _clean_text(meta.get("ImageDescription", {}).get("value"))
 
-        return ResolvedSource(
+        res = ResolvedSource(
             ref=ref,
+            title=title,
+            kind=kind,
             metadata={"title": title, "description": desc, "raw": meta},
-            rights=rights_list,
+            evidence=rights_list,
             offers=offers,
         )
+        if tags:
+            res.tags = tags
+        return res
 
 
 Plugin = CommonsSource

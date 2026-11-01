@@ -6,11 +6,16 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
 import shutil
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+from ..sdk.errors import ProproomError
+from . import db, dedupe, jobs, ops
+from .ids import utcnow
+from .media import sniff_mime
 from .paths import Home
 
 LinkMode = Literal["reflink", "copy", "hardlink", "auto"]
@@ -82,8 +87,7 @@ def verify_blob(home: Home, sha256: str) -> str:
 
 
 def _reflink(src: Path, dst: Path) -> bool:
-    """Attempt clone / reflink on supported filesystems (e.g. btrfs, XFS)."""
-    # 1. On Linux, FICLONE ioctl = 0x40049409
+    """Attempt clone / reflink on supported filesystems (e.g. btrfs, XFS) using FICLONE."""
     if hasattr(os, "O_RDONLY"):
         try:
             FICLONE = 0x40049409
@@ -92,33 +96,19 @@ def _reflink(src: Path, dst: Path) -> bool:
                 fcntl.ioctl(d.fileno(), FICLONE, s.fileno())
             return True
         except Exception:
-            pass
-    # 2. Try copy_file_range if available
-    if hasattr(os, "copy_file_range"):
-        try:
-            size = src.stat().st_size
-            with open(src, "rb") as s, open(dst, "wb") as d:
-                offset_in = 0
-                offset_out = 0
-                while offset_in < size:
-                    copied = os.copy_file_range(s.fileno(), d.fileno(), size - offset_in, offset_in, offset_out)
-                    if copied == 0:
-                        break
-                    offset_in += copied
-                    offset_out += copied
-            return True
-        except Exception:
-            pass
+            dst.unlink(missing_ok=True)
     return False
 
 
-def link_or_copy(src: Path, dst: Path, mode: LinkMode = "auto") -> str:
+def link_or_copy(src: Path, dst: Path, mode: LinkMode = "auto", *, temporary: Path | None = None) -> str:
     """Deliver a file from CAS store to a destination path using reflink, copy, or hardlink.
 
     Returns the actual link mode used: 'reflink', 'copy', or 'hardlink'.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dst = dst.parent / f".tmp_{dst.name}_{os.getpid()}"
+    tmp_dst = temporary or dst.parent / f".tmp_{dst.name}_{os.getpid()}"
+    if tmp_dst.parent != dst.parent or tmp_dst.exists() or tmp_dst.is_symlink():
+        raise ProproomError("delivery_conflict", f"Temporary destination already exists or is unsafe: {tmp_dst}")
 
     used_mode = mode
     if mode == "hardlink":
@@ -127,16 +117,112 @@ def link_or_copy(src: Path, dst: Path, mode: LinkMode = "auto") -> str:
             used_mode = "hardlink"
         except OSError:
             shutil.copy2(src, tmp_dst)
+            tmp_dst.chmod(tmp_dst.stat().st_mode | 0o644)
             used_mode = "copy"
     elif mode == "copy":
         shutil.copy2(src, tmp_dst)
+        tmp_dst.chmod(tmp_dst.stat().st_mode | 0o644)
         used_mode = "copy"
     else:  # auto or reflink
         if _reflink(src, tmp_dst):
             used_mode = "reflink"
         else:
             shutil.copy2(src, tmp_dst)
+            tmp_dst.chmod(tmp_dst.stat().st_mode | 0o644)
             used_mode = "copy"
 
     os.replace(tmp_dst, dst)
     return used_mode
+
+
+def add(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Ingest local files (own work / manual)."""
+    b = ctx.booted
+    paths = args["paths"]
+    basis = args.get("basis", "own_work")
+
+    conn = db.connect(b.home.db)
+    try:
+        op_id, is_new, prev_res = ops.claim_operation(
+            conn, b.home, "add", args.get("idempotency_key"), args, actor=ctx.actor
+        )
+        if not is_new and prev_res is not None:
+            return prev_res
+
+        policy_rules = json.loads(
+            conn.execute("SELECT rules FROM policy WHERE version = ?", (b.policy_version,)).fetchone()["rules"]
+        )
+        added = []
+
+        conn.execute("BEGIN IMMEDIATE")
+        for p_str in paths:
+            p = Path(p_str)
+            if not p.is_absolute():
+                p = b.home.nas / p_str
+            if not p.is_file():
+                continue
+
+            mime, kind = sniff_mime(p)
+            stored_sha, stored_bytes, relpath = put_file(b.home, p, mime=mime, move=False)
+            dedupe.register_blob(conn, stored_sha, stored_bytes, mime, stored=True, storage_path=relpath)
+
+            rel = p.relative_to(b.home.nas) if p.is_relative_to(b.home.nas) else p
+            slug = dedupe.generate_unique_slug(conn, "manual", rel.as_posix())
+            title = p.stem.replace("_", " ")
+
+            aid, rid = dedupe.register_asset(conn, slug=slug, kind=kind, title=title)
+            rep_id = dedupe.register_representation(conn, asset_id=aid, blob_sha256=stored_sha, role="original")
+            prov_id = dedupe.register_provenance(conn, asset_id=aid, source="manual", external_id=str(p))
+            dedupe.register_rights(
+                conn,
+                provenance_id=prov_id,
+                asset_id=aid,
+                policy_version=b.policy_version,
+                policy_rules=policy_rules,
+                basis=basis,
+                attribution="Local User",
+                created_by=ctx.actor,
+            )
+            dedupe.sync_search_doc(conn, rid=rid, title=title)
+
+            added.append({"asset_id": aid, "slug": slug, "sha256": stored_sha, "representation_id": rep_id})
+
+        result = {"added": added, "count": len(added)}
+        ops.complete_operation(conn, b.home, op_id, result)
+        conn.execute("COMMIT")
+        return result
+    finally:
+        conn.close()
+
+
+def verify(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Recompute blob sha256 and report mismatches and the projects sharing them."""
+    b = ctx.booted
+    conn = db.connect(b.home.db)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        job_id = jobs.create_job(conn, "verify", {})
+        conn.execute("COMMIT")
+
+        rows = conn.execute("SELECT sha256 FROM blob WHERE stored = 1").fetchall()
+        checked = 0
+        mismatches = []
+        for r in rows:
+            st = verify_blob(b.home, r["sha256"])
+            checked += 1
+            if st != "ok":
+                mismatches.append({"sha256": r["sha256"], "state": st})
+            conn.execute(
+                "UPDATE blob SET verify_state = ?, verified_at = ? WHERE sha256 = ?",
+                (st, utcnow(), r["sha256"]),
+            )
+
+        jobs.finish_job(conn, job_id, "succeeded")
+        return {
+            "job_id": job_id,
+            "state": "succeeded",
+            "progress": {"checked": checked, "mismatches": mismatches},
+        }
+    finally:
+        conn.close()
+

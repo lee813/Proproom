@@ -15,7 +15,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_ROOT_USER_ACTION=ignore \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
     PROP_NAS=/nas \
-    HOME=/home/prop
+    HOME=/home/prop \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/proproom-browsers
 
 # ffmpeg: scene cuts, loudness, clip delivery. Built with nvdec/cuvid on Ubuntu.
 RUN apt-get update \
@@ -26,6 +27,15 @@ RUN apt-get update \
 WORKDIR /opt/proproom
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
+
+# Tesseract for the ocr_flags analyzer (burned-in subtitles, watermarks). Separate layer: keeps pip cached.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra tesseract-ocr-chi-sim \
+ && rm -rf /var/lib/apt/lists/*
+
+# Browser binaries are opt-in; the default image can use a configured CDP service.
+ARG INSTALL_BROWSER=0
+RUN if [ "$INSTALL_BROWSER" = "1" ]; then python -m playwright install --with-deps chromium; fi
 
 COPY pyproject.toml README.md ./
 COPY proproom ./proproom

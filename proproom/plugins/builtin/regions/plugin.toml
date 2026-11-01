@@ -1,7 +1,8 @@
 [plugin]
 name = "regions"
-version = "0.0.1"
-sdk = ">=0.1,<2"
+version = "0.1.0"
+sdk = ">=1.0,<2"
 types = ["analyzer"]
 status = "ready"
-summary = "Composition / Region analyzer (face, plate, text, subject, logo bounding boxes)."
+summary = "Face, number-plate, logo, text and main-subject boxes (OWLv2 zero-shot detection)."
+media_prefixes = ["image/", "video/"]
