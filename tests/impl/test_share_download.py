@@ -32,8 +32,10 @@ def test_zip_contains_only_shared_files_without_recording_usage(client, ctx, con
     assert response.status_code == 200 and response.headers["content-type"] == "application/zip"
     assert "attachment" in response.headers["content-disposition"]
     with ZipFile(io.BytesIO(response.content)) as archive:
-        assert archive.namelist() == ["001.jpg", "002.png"]
+        assert archive.namelist() == ["001.jpg", "002.png", "CREDITS.txt"]
         assert archive.read("001.jpg") == b"first" and archive.read("002.png") == b"second"
+        credits = archive.read("CREDITS.txt").decode()
+    assert "private" not in credits.lower()
     assert conn.execute("SELECT count(*) FROM usage").fetchone()[0] == before
 
 
@@ -51,12 +53,29 @@ def test_selected_zip_and_single_file_reuse_share_membership(client, ctx, conn, 
     assert client.get(f"/s/{token}/media/{private.rep_id}").status_code == 404
     response = client.get(f"/s/{token}/download.zip?pos=2")
     with ZipFile(io.BytesIO(response.content)) as archive:
-        assert archive.namelist() == ["002.png"] and archive.read("002.png") == single.content
+        assert archive.namelist() == ["002.png", "CREDITS.txt"] and archive.read("002.png") == single.content
+        credits = archive.read("CREDITS.txt").decode()
+    assert "Two" in credits and "One" not in credits
     for query in ("pos=0", "pos=99", "pos=1&pos=99", "pos=1&pos=1"):
         assert client.get(f"/s/{token}/download.zip?{query}").status_code == 400
     response = client.get(f"/s/{token}/download.zip?pos=2&pos=1")
     with ZipFile(io.BytesIO(response.content)) as archive:
-        assert archive.namelist() == ["001.jpg", "002.png"]
+        assert archive.namelist() == ["001.jpg", "002.png", "CREDITS.txt"]
+
+
+def test_credits_match_what_prop_credits_says_for_the_same_files(client, ctx, conn, home):
+    a = ingest(conn, home, slug="one", title="One", attribution="Ann", license_id="cc-by-4.0")
+    b = ingest(conn, home, slug="mine", title="Mine", basis="own_work", license_id=None, attribution="Me")
+    c = ingest(conn, home, slug="odd", title="Odd", attribution="Stranger")
+    conn.execute("DELETE FROM rights_assessment WHERE asset_id = ?", (c.asset_id,))  # no recorded basis
+    token = REGISTRY["share"](ctx, {"assets": [a.asset_id, b.asset_id, c.asset_id]})["token"]
+    with ZipFile(io.BytesIO(client.get(f"/s/{token}/download.zip").content)) as archive:
+        text = archive.read("CREDITS.txt").decode()
+    assert "- One by Ann (https://example.org/one) licensed under cc-by-4.0" in text
+    assert "## Original Work" in text and "- Mine (002.png)" not in text and "- Mine (" in text
+    # an asset with no rights assessment is still credited with what is known, not left out
+    assert "## Other (no recorded rights basis)" in text and "- Odd by Stranger (https://example.org/odd)" in text
+    assert text.endswith("- 001.jpg: One\n- 002.jpg: Mine\n- 003.jpg: Odd\n")
 
 
 def test_files_are_named_from_what_they_are_not_the_stored_mime(client, ctx, conn, home):
@@ -66,7 +85,7 @@ def test_files_are_named_from_what_they_are_not_the_stored_mime(client, ctx, con
                mime='video/webm; codecs="vp9, opus"')
     token = REGISTRY["share"](ctx, {"assets": [a.asset_id, b.asset_id]})["token"]
     with ZipFile(io.BytesIO(client.get(f"/s/{token}/download.zip").content)) as archive:
-        assert archive.namelist() == ["001.ogg", "002.webm"]
+        assert archive.namelist() == ["001.ogg", "002.webm", "CREDITS.txt"]
 
 
 def test_zip_rejects_invalid_revoked_and_expired_links(client, ctx, conn, home):
@@ -96,10 +115,10 @@ def test_zip_stream_is_bounded_and_supports_large_files(tmp_path):
     path = tmp_path / "large"
     path.write_bytes(b"x" * (share_download.CHUNK_SIZE * 4 + 7))
     entry = share_download.SharedFile(1, "rep", path, "001.bin", "application/octet-stream", path.stat().st_size)
-    chunks = list(share_download.stream([entry]))
+    chunks = list(share_download.stream([entry], "credits"))
     assert max(map(len, chunks)) < share_download.CHUNK_SIZE + 1024
     with ZipFile(io.BytesIO(b"".join(chunks))) as archive:
-        assert archive.read("001.bin") == path.read_bytes()
+        assert archive.read("001.bin") == path.read_bytes() and archive.read("CREDITS.txt") == b"credits"
 
 
 @pytest.mark.skipif(os.environ.get("PROP_CAPTURE_BROWSER_TEST") != "1", reason="requires browser test image")
@@ -131,14 +150,14 @@ def test_download_button_works_in_a_browser(lib, ctx, conn, home):
             with page.expect_download() as info:
                 button.click()
             with ZipFile(info.value.path()) as archive:
-                assert archive.namelist() == ["001.jpg", "002.png"]
+                assert archive.namelist() == ["001.jpg", "002.png", "CREDITS.txt"]
             select = page.get_by_role("button", name="Download selected (ZIP)")
             assert select.is_disabled()
             page.get_by_role("checkbox", name="Select #2").check()
             with page.expect_download() as info:
                 select.click()
             with ZipFile(info.value.path()) as archive:
-                assert archive.namelist() == ["002.png"] and archive.read("002.png") == b"other"
+                assert archive.namelist() == ["002.png", "CREDITS.txt"] and archive.read("002.png") == b"other"
             with page.expect_download() as info:
                 page.get_by_role("link", name="Download file #1").click()
             assert info.value.suggested_filename == "001.jpg"

@@ -263,8 +263,10 @@ async def share_media(token: str, rep_id: str, request: Request) -> Response:
 @app.get("/s/{token}/download.zip")
 def share_archive(token: str, pos: list[int] | None = Query(default=None)) -> StreamingResponse:
     share = _get_share(token)
-    files = share_download.prepare(_state["booted"].home, share["id"], positions=pos)
-    return StreamingResponse(share_download.stream(files), media_type="application/zip",
+    home = _state["booted"].home
+    files = share_download.prepare(home, share["id"], positions=pos)
+    credits = share_download.credits_text(home, files)
+    return StreamingResponse(share_download.stream(files, credits), media_type="application/zip",
                              headers={"Content-Disposition": 'attachment; filename="proproom-share.zip"',
                                       "Cache-Control": "no-store"})
 

@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
 
-from . import db
+from . import db, delivery
 from .media import guess_extension
 from ..sdk.errors import ProproomError
 
 CHUNK_SIZE = 256 * 1024
+CREDITS_NAME = "CREDITS.txt"
 
 
 @dataclass(frozen=True)
@@ -86,8 +87,25 @@ def prepare(home, share_id: str, *, positions: list[int] | None = None,
     return files
 
 
-def stream(files: list[SharedFile]) -> Iterator[bytes]:
-    """Produce a ZIP in bounded chunks; a mid-stream read error aborts the download."""
+def credits_text(home, files: list[SharedFile]) -> str:
+    """CREDITS.txt for exactly these files: the same text `prop credits` gives a project, then which file is which."""
+    conn = db.connect(home.db, readonly=True)
+    try:
+        credits = []
+        for f in files:
+            row = conn.execute("SELECT asset_id FROM representation WHERE id = ?", (f.representation_id,)).fetchone()
+            credits.append((f.name, delivery.asset_credit(conn, row["asset_id"])))
+    finally:
+        conn.close()
+    groups: dict[str, list[dict]] = {"open_license": [], "quotation": [], "own_work": [], "other": []}
+    for name, snap in credits:
+        groups[delivery.credit_group(snap["basis"])].append({**snap, "as_name": name})
+    listing = "\n".join(f"- {name}: {snap['title']}" for name, snap in credits)
+    return f"{delivery.format_credits(groups)}\n\n## Files\n\n{listing}\n"
+
+
+def stream(files: list[SharedFile], credits: str) -> Iterator[bytes]:
+    """Produce a ZIP in bounded chunks, the files and then CREDITS.txt; a mid-stream read error aborts the download."""
     sink = _Stream()
     with ZipFile(sink, "w", compression=ZIP_STORED, allowZip64=True) as archive:
         for file in files:
@@ -96,4 +114,5 @@ def stream(files: list[SharedFile]) -> Iterator[bytes]:
                     dest.write(data)
                     yield sink.drain()
             yield sink.drain()
+        archive.writestr(CREDITS_NAME, credits.encode("utf-8"))
     yield sink.drain()
