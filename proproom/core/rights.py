@@ -62,6 +62,10 @@ def evaluate_rights(
 ) -> tuple[Decision, list[dict[str, Any]], list[str]]:
     """Evaluate rights evidence against policy rules.
 
+    Material is usable unless evidence says it isn't: a license in a denied family (NC, ND, editorial…), a denied
+    publisher, a plugin's verdict, or a synthetic depiction of a real person or event. Missing, unrecognised or
+    unexplained rights info is allowed and noted in the reasons.
+
     Returns:
       decision: 'allow' | 'review' | 'deny'
       reasons: list of {code, detail, plugin?}
@@ -84,11 +88,14 @@ def evaluate_rights(
 
     # Restrictions (trademark, personality, fop, etc.)
     if restrictions:
+        if "disputed" in restrictions:
+            reasons.append({"code": "disputed", "detail": "Source marks the file for deletion or as a copyright violation."})
+            return "deny", reasons, obligations
         for r in restrictions:
             if r in ("trademarked", "personality", "fop", "restriction"):
+                # A warning to pass on (e.g. Commons' personality-rights template), not a reason to block.
                 reasons.append({"code": "restriction_present", "detail": f"Material has restriction: {r}"})
-                if decision != "deny":
-                    decision = "review"
+                obligations.append(f"restriction:{r}")
 
     # Synthetic content handling
     if synthetic:
@@ -102,8 +109,7 @@ def evaluate_rights(
     norm_lic = (license_id or "").lower()
 
     if basis == "unknown":
-        reasons.append({"code": "unknown_rights", "detail": "Rights status is unknown or incomplete."})
-        return "deny", reasons, obligations
+        reasons.append({"code": "unknown_rights", "detail": "No rights info recorded; usable by default."})
 
     elif basis == "own_work":
         reasons.append({"code": "own_work", "detail": "Own original creation."})
@@ -114,9 +120,7 @@ def evaluate_rights(
             reasons.append({"code": "public_domain", "detail": f"Public domain basis ({pd_reason})."})
         else:
             reasons.append({"code": "public_domain_unverified",
-                            "detail": f"Public domain claim needs review ({pd_reason})."})
-            if decision != "deny":
-                decision = "review"
+                            "detail": f"Public domain without a listed reason ({pd_reason})."})
 
     elif basis == "quotation":
         reasons.append({"code": "quotation", "detail": "Quotation / screenshot requiring explicit confirmation."})
@@ -127,7 +131,8 @@ def evaluate_rights(
     elif basis in ("license", "provider_license"):
         # Check deny families first
         for df in deny_families:
-            if df in norm_lic:
+            # Whole parts only: "nc" in cc-by-nc-4.0, not in "open-government-licence".
+            if re.search(r"(?<![a-z0-9])" + re.escape(df) + r"(?![a-z0-9])", norm_lic):
                 reasons.append({"code": f"license_{df}", "detail": f"License matches denied family: {df}."})
                 return "deny", reasons, obligations
 
@@ -144,9 +149,7 @@ def evaluate_rights(
             if pd_reason and pd_reason.lower() in valid_pd:
                 matched_allow = True
             else:
-                reasons.append({"code": "public_domain_unverified", "detail": "Public domain license requires specific pd_reason."})
-                if decision != "deny":
-                    decision = "review"
+                reasons.append({"code": "public_domain_unverified", "detail": "Public domain without a listed reason."})
         else:
             for af in allow_families:
                 if af == "cc-by" and re.search(r"cc-by(?!-nc|-nd|-sa)", norm_lic):
@@ -165,12 +168,9 @@ def evaluate_rights(
         if matched_allow:
             reasons.append({"code": "license_allowed", "detail": f"License allowed: {norm_lic}"})
         elif basis == "provider_license":
-            reasons.append({"code": "provider_license", "detail": f"Provider license '{norm_lic}' requires review."})
-            if decision != "deny":
-                decision = "review"
-        else:
-            reasons.append({"code": "license_unrecognized", "detail": f"License '{norm_lic}' is not in allowlist."})
-            return "deny", reasons, obligations
+            reasons.append({"code": "provider_license", "detail": f"Provider license '{norm_lic}'."})
+        elif norm_lic != "public-domain":  # already noted as public_domain_unverified
+            reasons.append({"code": "license_unrecognized", "detail": f"License '{norm_lic}' is not in the allowlist."})
 
     # Apply plugin restrictions (plugins may only restrict!)
     if plugin_restrictions:

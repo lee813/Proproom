@@ -302,7 +302,7 @@ _OPS = [
               input=obj(["spec"], spec=S, budget=S), output=JOB, side_effects=True, handler=_pull),
     Operation("verify", "Recompute blob sha256 and report mismatches and the projects sharing them.",
               output=JOB, mcp="admin", handler=_verify),
-    Operation("import_project", "Import a project's existing assets.json and back-fill usage.",
+    Operation("import_project", "Import a project's media: assets.json entries (with usage) and files under assets/ and images/.",
               input=obj(["project"], project=S), output=JOB, side_effects=True, mcp="admin", handler=_import_project),
     Operation("plugin_list", "Loaded plugins with version and hash.", mcp="admin", handler=_plugin_list),
     Operation("plugin_reload", "Reload directory plugins; running jobs keep the old instance.",

@@ -56,6 +56,24 @@ _EXT_TO_MIME_AND_KIND: dict[str, tuple[str, str]] = {
 }
 
 
+# What a kind is made of, for filters that only care whether it's moving, still or sound.
+_KIND_FAMILY: dict[str, str] = {
+    "footage": "video",
+    "music": "audio", "sfx": "audio", "ambience": "audio",
+    "photo": "image", "portrait": "image", "document": "image", "screenshot": "image", "artwork": "image",
+    "graphic": "image",
+}
+
+
+def kind_family(kind: str | None) -> str | None:
+    return _KIND_FAMILY.get(normalize_kind(kind)) if kind else None
+
+
+def is_media_file(p: Path) -> bool:
+    """A file the library can hold, judged by extension (a project folder also holds json, html and js)."""
+    return p.suffix.lower() in _EXT_TO_MIME_AND_KIND
+
+
 def normalize_kind(raw_kind: str | None, inferred: str = "photo") -> str:
     """Normalize legacy or custom kind to canonical (footage, photo, graphic, music)."""
     if not raw_kind:

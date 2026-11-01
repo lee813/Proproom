@@ -238,6 +238,11 @@ def register_rights(
         (ass_id, asset_id, policy_version, decision, basis,
          json.dumps(reasons), json.dumps([ev_id]), json.dumps(obligations), utcnow_monotonic(), created_by),
     )
+    # Vector rows carry the asset's decision for filtering; a new assessment must reach them too.
+    for space in conn.execute("SELECT id, vec_table FROM embedding_space").fetchall():
+        conn.execute(f"UPDATE {space['vec_table']} SET rights = ? WHERE rid IN "
+                     "(SELECT rid FROM vec_target WHERE space_id = ? AND asset_id = ?)",
+                     (decision, space["id"], asset_id))
     return ev_id, ass_id
 
 
